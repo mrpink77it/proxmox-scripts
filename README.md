@@ -6,8 +6,6 @@
 
 Una raccolta di utilità shell e script di automazione per **Proxmox Virtual Environment (VE)**.
 
-## 📖 Descrizione del Progetto
-
 Questo repository nasce come "raccoglitore" personale di strumenti, snippet e script creati per automatizzare compiti specifici, velocizzare il workflow e risolvere necessità pratiche sui miei nodi Proxmox. 
 
 ⚠️ **Stato del progetto: Sempre in WIP (Work in Progress).**
