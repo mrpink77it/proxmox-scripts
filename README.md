@@ -17,7 +17,7 @@ Non si tratta di una suite software statica e preconfezionata, ma di una cassett
 
 La raccolta si arricchisce col tempo. Attualmente include strumenti per:
 - **LXC & Host Auto-Updater**: Uno script Bash che si occupa di aggiornare l'host Proxmox e, in cascata, tutti i container LXC basati sui *Proxmox VE Helper-Scripts*, gestendo eccezioni custom (come l'esclusione di Nginx) con un output visuale in ASCII art.
-- *(Aggiungi qui i futuri script che caricherai)*
+
 
 ## 💻 Tecnologie e Requisiti
 
