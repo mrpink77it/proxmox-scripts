@@ -33,5 +33,4 @@ Tutti gli script sono forniti "così come sono" (AS IS). Sebbene siano utilizzat
 
 Questo progetto è distribuito sotto licenza **MIT**. Sei libero di utilizzare, modificare e distribuire il codice, anche per scopi commerciali, mantenendo l'attribuzione originale.
 
----
-*Creato e mantenuto da [mrpink77it](https://github.com/mrpink77it)*
+
