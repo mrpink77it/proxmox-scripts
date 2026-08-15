@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # ==============================================================================
-# Proxmox Host & LXC Auto-Updater (Menu Interattivo + Locale Check)
+# Proxmox Host & LXC Auto-Updater (Menu Interattivo + Locale Check + Verbose Scan)
 # ==============================================================================
 
 # Assicuriamoci che figlet sia installato
@@ -17,6 +17,7 @@ BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 CYAN='\033[0;36m'
+GRAY='\033[0;90m'
 NC='\033[0m'
 
 clear
@@ -40,9 +41,11 @@ if [[ "${update_host,,}" == "y" ]]; then
 fi
 
 # ==============================================================================
-# 2. SCANSIONE CONTAINER E TABELLA RIASSUNTIVA
+# 2. SCANSIONE CONTAINER E TABELLA RIASSUNTIVA (Verbose)
 # ==============================================================================
+echo -e "\n${CYAN}=====================================================================${NC}"
 echo -e "${CYAN}Scansione dei container LXC in corso (ricerca Helper-Scripts)...${NC}"
+echo -e "${CYAN}=====================================================================${NC}\n"
 
 declare -A LXC_NAMES
 declare -A LXC_STATUS
@@ -57,27 +60,36 @@ for vmid in $all_lxcs; do
     app_name=$(pct config "$vmid" | awk '/^hostname:/ {print $2}')
     [ -z "$app_name" ] && app_name="LXC-$vmid"
 
+    # Stampa l'inizio dell'analisi senza andare a capo (per l'output in linea)
+    echo -ne "${GRAY}Analisi VMID ${vmid} [${app_name}] -> ${NC}"
+
     # Esclusione automatica Nginx
     if [[ "${app_name,,}" == *"nginx"* ]]; then
+        echo -e "${CYAN}Saltato (Regola Nginx)${NC}"
         continue
     fi
 
     status=$(pct status "$vmid" | awk '{print $2}')
+    
+    echo -ne "Verifica config... "
     is_helper=$(grep -iE "tteck|helper-scripts" "/etc/pve/lxc/${vmid}.conf" 2>/dev/null)
     
     # Se è in esecuzione ma non ha il tag nel conf, controlliamo se ha il comando update
     if [[ -z "$is_helper" && "$status" == "running" ]]; then
-        has_update=$(pct exec "$vmid" -- bash -c "command -v update" 2>/dev/null)
+        echo -ne "Verifica comando interno... "
+        # Timeout inserito nel caso in cui pct exec si blocchi su un container instabile
+        has_update=$(timeout 5 pct exec "$vmid" -- bash -c "command -v update" 2>/dev/null)
         [[ -n "$has_update" ]] && is_helper="yes"
     fi
 
     if [[ -n "$is_helper" ]]; then
+        echo -ne "Recupero IP e OS... "
         ostype=$(pct config "$vmid" | awk '/^ostype:/ {print $2}')
         [ -z "$ostype" ] && ostype="N/D"
 
         # Recupera IP
         if [[ "$status" == "running" ]]; then
-            ip=$(pct exec "$vmid" -- ip -4 addr show eth0 2>/dev/null | grep inet | awk '{print $2}' | cut -d/ -f1 | head -n1)
+            ip=$(timeout 5 pct exec "$vmid" -- ip -4 addr show eth0 2>/dev/null | grep inet | awk '{print $2}' | cut -d/ -f1 | head -n1)
         else
             # Tenta di leggere l'IP dal file di configurazione se il CT è spento
             ip=$(pct config "$vmid" | grep -w "ip" | sed -E 's/.*ip=([^,]+).*/\1/' | cut -d/ -f1)
@@ -91,6 +103,10 @@ for vmid in $all_lxcs; do
         
         helper_all+=("$vmid")
         [[ "$status" == "running" ]] && helper_running+=("$vmid")
+
+        echo -e "${GREEN}Trovato Helper-Script!${NC}"
+    else
+        echo -e "${YELLOW}Non compatibile.${NC}"
     fi
 done
 
