@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Proxmox 9 - Multi-Vendor GPU Passthrough Manager (LXC <-> VM)
-# Versione: 1.0.8 (Integrazione Spegnimento LXC)
+# Versione: 1.0.9 (Display Default & Compute Profile per ROM-Bar)
 # Supporto: NVIDIA, AMD, INTEL su ZFS + systemd-boot
 # ==============================================================================
 
@@ -37,7 +37,7 @@ select_gpu() {
 
     local INTRO_MSG="Questo script automatizza l'assegnazione dinamica delle GPU tra i container LXC e le Macchine Virtuali (passthrough VFIO).\n\nScegli quale scheda video desideri gestire:"
 
-    GPU_PCI=$(whiptail --title "Selezione GPU (v1.0.8)" \
+    GPU_PCI=$(whiptail --title "Selezione GPU (v1.0.9)" \
         --menu "$INTRO_MSG" 20 100 4 "${menu_options[@]}" 3>&1 1>&2 2>&3)
     
     [ -z "$GPU_PCI" ] && exit 0
@@ -58,11 +58,10 @@ select_gpu() {
 }
 
 stop_active_lxcs() {
-    # Legge solo i container attualmente in esecuzione
     local running_lxcs=($(pct list | awk 'NR>1 && $2=="running" {print $1, $3}'))
     
     if [ ${#running_lxcs[@]} -eq 0 ]; then
-        return 0 # Nessun container acceso, procede direttamente
+        return 0
     fi
 
     local checklist_options=()
@@ -77,7 +76,6 @@ stop_active_lxcs() {
         "${checklist_options[@]}" 3>&1 1>&2 2>&3)
 
     if [ -n "$selected_lxcs" ]; then
-        # Pulisce le virgolette dall'output di whiptail
         selected_lxcs=$(echo "$selected_lxcs" | tr -d '"')
         echo -e "${YELLOW}Spegnimento container in corso...${NC}"
         for vmid in $selected_lxcs; do
@@ -107,7 +105,7 @@ main_menu() {
         menu_items+=("6" "Cambia GPU selezionata")
         menu_items+=("7" "Esci dal programma")
 
-        CHOICE=$(whiptail --title "Proxmox 9 GPU Manager (v1.0.8)" \
+        CHOICE=$(whiptail --title "Proxmox 9 GPU Manager (v1.0.9)" \
             --menu "GPU Selezionata: $GPU_PCI ($VENDOR_NAME)\n\nScegli un'operazione dal menu sottostante:" 22 95 7 \
             "${menu_items[@]}" 3>&1 1>&2 2>&3)
             
@@ -164,7 +162,6 @@ dump_vbios() {
     clear
     LAST_DUMPED_ROM=""
     
-    # Chiama la funzione per spegnere i container prima del dump
     stop_active_lxcs
     
     echo -e "${YELLOW}Preparazione per l'estrazione del vBIOS...${NC}"
@@ -206,7 +203,6 @@ dump_vbios() {
 bind_vfio() {
     clear
     
-    # Mostra l'interfaccia per spegnere i container al volo
     stop_active_lxcs
     
     if [ "$VENDOR_NAME" == "NVIDIA" ]; then
@@ -337,20 +333,17 @@ create_test_vm() {
     qm set $VMID --scsihw virtio-scsi-pci --scsi0 $STORAGE:vm-$VMID-disk-0
     qm set $VMID --ide2 $STORAGE:cloudinit
     qm set $VMID --boot c --bootdisk scsi0
-    qm set $VMID --serial0 socket --vga serial0
     qm set $VMID --agent enabled=1
     
     qm set $VMID --ciuser "$CI_USER" --cipassword "$CI_PASS" --ipconfig0 ip=dhcp
     
     SHORT_PCI=$(echo $GPU_PCI | awk -F':' '{print $2":"$3}')
-    PT_OPTS="$SHORT_PCI,pcie=1"
-
-    if [[ "$VENDOR_NAME" == "NVIDIA" || "$VENDOR_NAME" == "AMD" ]]; then
-        PT_OPTS="${PT_OPTS},x-vga=1"
-    fi
+    
+    # Profilo Compute (rombar disabilitato, niente x-vga)
+    PT_OPTS="$SHORT_PCI,pcie=1,rombar=0"
     
     if [ -n "$ROM_FILE" ]; then
-        PT_OPTS="${PT_OPTS},romfile=$ROM_FILE"
+        PT_OPTS="$SHORT_PCI,pcie=1,romfile=$ROM_FILE"
     fi
 
     qm set $VMID --hostpci0 "$PT_OPTS"
