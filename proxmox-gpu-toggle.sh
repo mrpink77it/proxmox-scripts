@@ -17,8 +17,9 @@
 #     - Scrive i parametri in /etc/kernel/cmdline (specifico per boot su ZFS).
 #     - Inserisce i moduli vfio, vfio_iommu_type1, vfio_pci, vfio_virqfd in /etc/modules.
 #     - Esegue proxmox-boot-tool refresh e update-initramfs.
-# [2] Crea VM Ubuntu 24.04:
-#     - Scarica l'immagine ufficiale Cloud-Init di Ubuntu 24.04.
+# [2] Crea VM (Ubuntu 24 / Debian 13):
+#     - Chiede quale OS installare (Ubuntu 24.04 o Debian 13).
+#     - Scarica l'immagine ufficiale Cloud-Init corrispondente.
 #     - Crea una VM configurando RAM (8GB), CPU (4 core) e disco su ZFS (40GB).
 #     - Collega automaticamente la GPU rilevata come dispositivo hostpci0.
 #     - Prepara il Cloud-Init per l'inserimento di utente/password da Web GUI.
@@ -54,9 +55,9 @@ fi
 main_menu() {
     while true; do
         CHOICE=$(whiptail --title "Proxmox 9 GPU Passthrough Manager" \
-            --menu "GPU Rilevata: $GPU_PCI\nScegli un'operazione:" 20 70 6 \
+            --menu "GPU Rilevata: $GPU_PCI\nScegli un'operazione:" 20 75 6 \
             "1" "Configura Host (IOMMU su ZFS/systemd-boot)" \
-            "2" "Crea VM Ubuntu 24.04 (Cloud-Init + Passthrough)" \
+            "2" "Crea VM Cloud-Init (Scelta Ubuntu 24 o Debian 13)" \
             "3" "ATTIVA VFIO (Assegna GPU alla VM)" \
             "4" "RIPRISTINA NVIDIA (Assegna GPU agli LXC)" \
             "5" "Esci" 3>&1 1>&2 2>&3)
@@ -170,13 +171,36 @@ create_test_vm() {
     STORAGE=$(whiptail --inputbox "Inserisci lo storage ZFS di destinazione (es. local-zfs):" 8 40 "local-zfs" 3>&1 1>&2 2>&3)
     [ -z "$STORAGE" ] && return
 
-    echo -e "${GREEN}Scaricamento immagine Ubuntu 24.04 Cloud-Init...${NC}"
-    cd /var/lib/vz/template/iso
-    wget -nc -q --show-progress https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+    OS_CHOICE=$(whiptail --title "Selezione OS" \
+        --menu "Quale sistema operativo vuoi installare?" 12 60 2 \
+        "1" "Ubuntu 24.04 LTS (Noble)" \
+        "2" "Debian 13 (Trixie)" 3>&1 1>&2 2>&3)
+    [ -z "$OS_CHOICE" ] && return
 
-    echo -e "${GREEN}Creazione VM $VMID...${NC}"
-    qm create $VMID --name Ubuntu-AI-Test --memory 8192 --cores 4 --net0 virtio,bridge=vmbr0
-    qm importdisk $VMID noble-server-cloudimg-amd64.img $STORAGE
+    cd /var/lib/vz/template/iso
+
+    if [ "$OS_CHOICE" = "1" ]; then
+        VM_NAME="Ubuntu24-AI-Test"
+        IMG_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+        IMG_FILE="noble-server-cloudimg-amd64.img"
+    elif [ "$OS_CHOICE" = "2" ]; then
+        VM_NAME="Debian13-AI-Test"
+        IMG_URL="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
+        IMG_FILE="debian-13-genericcloud-amd64.qcow2"
+    fi
+
+    echo -e "${GREEN}Scaricamento immagine Cloud-Init per $VM_NAME...${NC}"
+    wget -nc -q --show-progress "$IMG_URL" || true
+
+    if [ ! -f "$IMG_FILE" ]; then
+        echo -e "${RED}[ERRORE] Impossibile trovare l'immagine $IMG_FILE. Verifica la connessione a internet.${NC}"
+        read -p "Premi INVIO per tornare al menu..."
+        return
+    fi
+
+    echo -e "${GREEN}Creazione VM $VMID ($VM_NAME)...${NC}"
+    qm create $VMID --name $VM_NAME --memory 8192 --cores 4 --net0 virtio,bridge=vmbr0
+    qm importdisk $VMID $IMG_FILE $STORAGE
     
     # Setup scsi controller e aggancio disco
     qm set $VMID --scsihw virtio-scsi-pci --scsi0 $STORAGE:vm-$VMID-disk-0
@@ -192,7 +216,7 @@ create_test_vm() {
     # Espansione del disco per i test (40GB)
     qm resize $VMID scsi0 40G
 
-    whiptail --title "Creazione VM Completata" --msgbox "La VM $VMID è pronta sull'host Proxmox 9.\n\nSTEP SUCCESSIVI:\n1. Apri la Web GUI di Proxmox.\n2. Seleziona la VM -> Cloud-Init e imposta User, Password e/o chiavi SSH.\n3. Clicca su 'Regenerate Image'.\n\nAttenzione: Prima di accenderla, esegui l'Opzione 3 dello script per assegnarle la GPU!" 16 65
+    whiptail --title "Creazione VM Completata" --msgbox "La VM $VMID ($VM_NAME) è pronta sull'host Proxmox 9.\n\nSTEP SUCCESSIVI:\n1. Apri la Web GUI di Proxmox.\n2. Seleziona la VM -> Cloud-Init e imposta User, Password e/o chiavi SSH.\n3. Clicca su 'Regenerate Image'.\n\nAttenzione: Prima di accenderla, esegui l'Opzione 3 dello script per assegnarle la GPU!" 16 65
 }
 
 main_menu
