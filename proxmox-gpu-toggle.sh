@@ -1,39 +1,33 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Proxmox 9 - Dynamic GPU Passthrough Manager (LXC <-> VM)
-# Supporto specifico per ZFS + systemd-boot
+# Proxmox 9 - Multi-Vendor GPU Passthrough Manager (LXC <-> VM)
+# Versione: 1.0.0
+# Supporto: NVIDIA, AMD, INTEL su ZFS + systemd-boot
 # ==============================================================================
 # DESCRIZIONE DETTAGLIATA E FUNZIONAMENTO:
-# Questo script automatizza l'assegnazione dinamica di una GPU NVIDIA tra
-# container LXC (che richiedono il driver caricato sull'host e i nodi in /dev/)
-# e Macchine Virtuali (che richiedono il passthrough PCIe diretto tramite VFIO).
-# Evita l'uso della blacklist in /etc/modprobe.d/, permettendo lo switch "a caldo"
-# senza riavviare Proxmox 9.
+# Questo script automatizza l'assegnazione dinamica di una o più GPU tra
+# container LXC (driver caricato sull'host) e Macchine Virtuali (passthrough VFIO).
+# Evita la blacklist in /etc/modprobe.d/, permettendo lo switch "a caldo"
+# senza riavviare l'host Proxmox 9.
 #
 # ELENCO DELLE FUNZIONI:
-# [1] Configura Host (IOMMU):
-#     - Rileva l'architettura CPU (Intel/AMD) e configura i flag corretti
-#       (intel_iommu=on / amd_iommu=on e iommu=pt).
-#     - Scrive i parametri in /etc/kernel/cmdline (specifico per boot su ZFS).
-#     - Inserisce i moduli vfio, vfio_iommu_type1, vfio_pci, vfio_virqfd in /etc/modules.
-#     - Esegue proxmox-boot-tool refresh e update-initramfs.
-# [2] Crea VM (Ubuntu 24 / Debian 13):
-#     - Chiede quale OS installare (Ubuntu 24.04 o Debian 13).
+# [1] Selezione Dinamica Hardware:
+#     - Identifica in automatico le schede VGA/3D e il Vendor (NVIDIA, AMD, Intel).
+# [2] Configura Host (IOMMU):
+#     - Configura i flag CPU (Intel/AMD) e iommu=pt in /etc/kernel/cmdline (ZFS).
+#     - Aggiorna i moduli vfio in /etc/modules e rigenera initramfs.
+# [3] Crea VM (Ubuntu 24 / Debian 13):
 #     - Scarica l'immagine ufficiale Cloud-Init corrispondente.
-#     - Crea una VM configurando RAM (8GB), CPU (4 core) e disco su ZFS (40GB).
-#     - Collega automaticamente la GPU rilevata come dispositivo hostpci0.
-#     - Prepara il Cloud-Init per l'inserimento di utente/password da Web GUI.
-# [3] ATTIVA VFIO (Assegna GPU alla VM):
-#     - Ferma systemd-persistenced (che tiene occupata la scheda).
-#     - Esegue l'unbind a caldo della GPU (e del controller Audio) dai driver NVIDIA host.
-#     - Esegue il bind tramite driver_override al modulo vfio-pci.
-#     - (A questo punto la VM può essere accesa e avrà il controllo hardware esclusivo).
-# [4] RIPRISTINA NVIDIA (Assegna GPU agli LXC):
-#     - Esegue l'unbind della GPU e del controller Audio da vfio-pci.
-#     - Ricarica i moduli kernel nvidia e nvidia_uvm sull'host.
-#     - Riavvia il servizio nvidia-persistenced.
-#     - Esegue nvidia-smi "silenziosamente" per forzare la ricreazione immediata
-#       dei nodi /dev/nvidia* (dev0, nvidiactl, uvm, caps) usati dai container LXC.
+#     - Crea la VM su ZFS (8GB RAM, 4 core, 40GB disco).
+#     - Configura il passthrough specifico per vendor (es. x-vga=1 per NVIDIA/AMD).
+#     - Permette l'inserimento opzionale di un file vBIOS (.rom) presente in /usr/share/kvm/.
+# [4] ATTIVA VFIO (Assegna GPU alla VM):
+#     - Esegue l'unbind della GPU (e Audio) dal driver nativo (es. nvidia, amdgpu).
+#     - Associa la scheda al driver vfio-pci tramite driver_override.
+# [5] RIPRISTINA DRIVER (Assegna GPU agli LXC):
+#     - Rimuove l'override vfio-pci.
+#     - Ricarica automaticamente i moduli host (nvidia, amdgpu, i915).
+#     - Se NVIDIA, riavvia persistenced e ricrea i device node in /dev/nvidia*.
 # ==============================================================================
 
 set -euo pipefail
@@ -41,26 +35,66 @@ set -euo pipefail
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
-# Rileva automaticamente la GPU NVIDIA
-GPU_PCI=$(lspci -D -nn | grep -i nvidia | grep -i vga | awk '{print $1}')
-AUD_PCI=$(lspci -D -nn | grep -i nvidia | grep -i audio | awk '{print $1}' || echo "")
+# Variabili globali popolate dalla selezione
+GPU_PCI=""
+AUD_PCI=""
+VENDOR=""
+VENDOR_NAME=""
 
-if [ -z "$GPU_PCI" ]; then
-    echo -e "${RED}[ERRORE] Nessuna GPU NVIDIA rilevata nel sistema.${NC}"
-    exit 1
-fi
+# Funzione per selezionare la GPU dal sistema
+select_gpu() {
+    # Trova tutti i dispositivi VGA e 3D Controller
+    local IFS=$'\n'
+    local gpu_list=($(lspci -nn | grep -iE 'vga|3d controller'))
+    
+    if [ ${#gpu_list[@]} -eq 0 ]; then
+        echo -e "${RED}[ERRORE] Nessuna GPU rilevata nel sistema.${NC}"
+        exit 1
+    fi
+
+    local menu_options=()
+    for gpu in "${gpu_list[@]}"; do
+        local pci_id=$(echo "$gpu" | awk '{print $1}')
+        local desc=$(echo "$gpu" | cut -d':' -f3-)
+        menu_options+=("$pci_id" "$desc")
+    done
+
+    GPU_PCI=$(whiptail --title "Selezione GPU (v1.0.0)" --menu "Scegli la scheda video da gestire:" 15 80 4 "${menu_options[@]}" 3>&1 1>&2 2>&3)
+    [ -z "$GPU_PCI" ] && exit 0
+
+    # Rileva il Vendor ID
+    VENDOR=$(lspci -n -s "$GPU_PCI" | awk '{print $3}' | cut -d':' -f1)
+    case "$VENDOR" in
+        10de) VENDOR_NAME="NVIDIA" ;;
+        1002) VENDOR_NAME="AMD" ;;
+        8086) VENDOR_NAME="INTEL" ;;
+        *)    VENDOR_NAME="UNKNOWN" ;;
+    esac
+
+    # Cerca l'audio controller associato (stesso bus)
+    local base_pci=$(echo "$GPU_PCI" | cut -d'.' -f1)
+    AUD_PCI=$(lspci -D -nn | grep "$base_pci" | grep -i audio | awk '{print $1}' || echo "")
+    
+    # Aggiungi il prefisso di dominio se mancante per i percorsi /sys/
+    if [[ "$GPU_PCI" != *":"*":"* ]]; then GPU_PCI="0000:$GPU_PCI"; fi
+    if [[ -n "$AUD_PCI" && "$AUD_PCI" != *":"*":"* ]]; then AUD_PCI="0000:$AUD_PCI"; fi
+}
 
 main_menu() {
+    select_gpu
+
     while true; do
-        CHOICE=$(whiptail --title "Proxmox 9 GPU Passthrough Manager" \
-            --menu "GPU Rilevata: $GPU_PCI\nScegli un'operazione:" 20 75 6 \
+        CHOICE=$(whiptail --title "Proxmox 9 GPU Manager v1.0.0" \
+            --menu "GPU Selezionata: $GPU_PCI ($VENDOR_NAME)\nScegli un'operazione:" 21 75 6 \
             "1" "Configura Host (IOMMU su ZFS/systemd-boot)" \
             "2" "Crea VM Cloud-Init (Scelta Ubuntu 24 o Debian 13)" \
-            "3" "ATTIVA VFIO (Assegna GPU alla VM)" \
-            "4" "RIPRISTINA NVIDIA (Assegna GPU agli LXC)" \
-            "5" "Esci" 3>&1 1>&2 2>&3)
+            "3" "ATTIVA VFIO (Assegna $VENDOR_NAME alla VM)" \
+            "4" "RIPRISTINA DRIVER (Assegna $VENDOR_NAME agli LXC)" \
+            "5" "Cambia GPU selezionata" \
+            "6" "Esci" 3>&1 1>&2 2>&3)
             
         if [ $? -ne 0 ]; then break; fi
 
@@ -68,8 +102,9 @@ main_menu() {
             1) setup_host_iommu ;;
             2) create_test_vm ;;
             3) bind_vfio ;;
-            4) bind_nvidia ;;
-            5) break ;;
+            4) bind_host ;;
+            5) select_gpu ;;
+            6) break ;;
         esac
     done
 }
@@ -78,145 +113,138 @@ setup_host_iommu() {
     clear
     echo -e "${GREEN}Configurazione IOMMU su systemd-boot (ZFS)...${NC}"
     
-    # Determina CPU per flag IOMMU
     if grep -q "Intel" /proc/cpuinfo; then
         IOMMU_FLAG="intel_iommu=on"
     else
         IOMMU_FLAG="amd_iommu=on"
     fi
 
-    # Configura cmdline per systemd-boot (ZFS)
     CMDLINE_FILE="/etc/kernel/cmdline"
     if ! grep -q "iommu=pt" "$CMDLINE_FILE"; then
-        echo -e "${YELLOW}Aggiungo i parametri IOMMU a $CMDLINE_FILE...${NC}"
         sed -i "\$ s/\$/ $IOMMU_FLAG iommu=pt/" "$CMDLINE_FILE"
         proxmox-boot-tool refresh
-    else
-        echo -e "${GREEN}Parametri IOMMU già presenti in $CMDLINE_FILE.${NC}"
     fi
 
-    # Configura moduli VFIO
     MODULES_FILE="/etc/modules"
     for mod in vfio vfio_iommu_type1 vfio_pci vfio_virqfd; do
-        if ! grep -q "^$mod" "$MODULES_FILE"; then
-            echo "$mod" >> "$MODULES_FILE"
-        fi
+        if ! grep -q "^$mod" "$MODULES_FILE"; then echo "$mod" >> "$MODULES_FILE"; fi
     done
     update-initramfs -u -k all
 
-    whiptail --title "Riavvio Necessario" --msgbox "L'host è configurato per IOMMU. Se è la prima volta che abiliti questi parametri nel kernel, DEVI RIAVVIARE PROXMOX 9 prima di poter usare il passthrough." 10 65
+    whiptail --title "Riavvio Necessario" --msgbox "L'host è configurato per IOMMU. RIAVVIA PROXMOX 9 prima di usare il passthrough." 10 65
 }
 
 bind_vfio() {
     clear
-    echo -e "${YELLOW}ATTENZIONE: Assicurati di aver fermato tutti i container LXC che stanno utilizzando la GPU!${NC}"
-    read -p "Premi INVIO se hai fermato gli LXC, oppure CTRL+C per annullare..."
+    echo -e "${YELLOW}Ferma i container LXC che usano la GPU $GPU_PCI!${NC}"
+    read -p "Premi INVIO per continuare, CTRL+C per annullare..."
     
-    echo -e "\n${GREEN}Scollegamento GPU dal driver NVIDIA (Host)...${NC}"
+    # Se è NVIDIA, ferma il persistenced
+    if [ "$VENDOR_NAME" == "NVIDIA" ]; then
+        systemctl stop nvidia-persistenced 2>/dev/null || true
+    fi
     
-    systemctl stop nvidia-persistenced 2>/dev/null || true
-    
-    # Unbind VGA
-    echo -n "$GPU_PCI" > /sys/bus/pci/drivers/nvidia/unbind 2>/dev/null || true
+    # Unbind generico
+    if [ -e "/sys/bus/pci/devices/$GPU_PCI/driver" ]; then
+        echo -n "$GPU_PCI" > /sys/bus/pci/devices/$GPU_PCI/driver/unbind
+    fi
     echo "vfio-pci" > /sys/bus/pci/devices/$GPU_PCI/driver_override
     echo "$GPU_PCI" > /sys/bus/pci/drivers_probe
     
-    # Unbind Audio (se presente)
+    # Unbind Audio
     if [ -n "$AUD_PCI" ]; then
-        echo -n "$AUD_PCI" > /sys/bus/pci/drivers/snd_hda_intel/unbind 2>/dev/null || true
+        if [ -e "/sys/bus/pci/devices/$AUD_PCI/driver" ]; then
+            echo -n "$AUD_PCI" > /sys/bus/pci/devices/$AUD_PCI/driver/unbind
+        fi
         echo "vfio-pci" > /sys/bus/pci/devices/$AUD_PCI/driver_override
         echo "$AUD_PCI" > /sys/bus/pci/drivers_probe
     fi
     
-    whiptail --title "Assegnazione VFIO Completata" --msgbox "GPU ($GPU_PCI) correttamente sganciata dall'host e agganciata a vfio-pci. Ora puoi avviare in sicurezza la tua VM di test." 8 60
+    whiptail --title "VFIO Attivo" --msgbox "GPU $GPU_PCI agganciata a vfio-pci." 8 60
 }
 
-bind_nvidia() {
+bind_host() {
     clear
-    echo -e "${YELLOW}ATTENZIONE: Assicurati che la VM con il passthrough sia completamente SPENTA!${NC}"
-    read -p "Premi INVIO per continuare, oppure CTRL+C per annullare..."
+    echo -e "${YELLOW}Assicurati che la VM sia SPENTA!${NC}"
+    read -p "Premi INVIO per continuare, CTRL+C per annullare..."
     
-    echo -e "\n${GREEN}Ripristino GPU al driver NVIDIA (LXC)...${NC}"
-    
-    # Unbind VGA da vfio
-    echo -n "$GPU_PCI" > /sys/bus/pci/drivers/vfio-pci/unbind 2>/dev/null || true
+    # Rimuovi VFIO override e lascia che il kernel carichi il driver corretto (nvidia, amdgpu, i915)
+    if [ -e "/sys/bus/pci/devices/$GPU_PCI/driver" ]; then
+        echo -n "$GPU_PCI" > /sys/bus/pci/devices/$GPU_PCI/driver/unbind
+    fi
     echo "" > /sys/bus/pci/devices/$GPU_PCI/driver_override
     echo "$GPU_PCI" > /sys/bus/pci/drivers_probe
     
-    # Unbind Audio da vfio
     if [ -n "$AUD_PCI" ]; then
-        echo -n "$AUD_PCI" > /sys/bus/pci/drivers/vfio-pci/unbind 2>/dev/null || true
+        if [ -e "/sys/bus/pci/devices/$AUD_PCI/driver" ]; then
+            echo -n "$AUD_PCI" > /sys/bus/pci/devices/$AUD_PCI/driver/unbind
+        fi
         echo "" > /sys/bus/pci/devices/$AUD_PCI/driver_override
         echo "$AUD_PCI" > /sys/bus/pci/drivers_probe
     fi
     
-    # Ricarica moduli NVIDIA host
-    modprobe nvidia
-    modprobe nvidia_uvm
-    systemctl start nvidia-persistenced 2>/dev/null || true
-    
-    # Forza la ricreazione dei nodi in /dev/nvidia per permettere agli LXC di vedere la GPU
-    if [ ! -c /dev/nvidia0 ]; then
-        echo -e "${YELLOW}Rigenerazione device node in /dev/...${NC}"
+    # Procedure post-bind specifiche
+    if [ "$VENDOR_NAME" == "NVIDIA" ]; then
+        modprobe nvidia_uvm || true
+        systemctl start nvidia-persistenced 2>/dev/null || true
         /usr/bin/nvidia-smi >/dev/null 2>&1 || true
     fi
 
-    whiptail --title "Ripristino Completato" --msgbox "GPU ($GPU_PCI) riassegnata ai moduli NVIDIA nativi. I nodi in /dev/ sono stati rigenerati. Ora puoi riavviare i tuoi container LXC." 9 65
+    whiptail --title "Ripristino Completato" --msgbox "GPU $GPU_PCI riassegnata ai driver host nativi." 8 60
 }
 
 create_test_vm() {
     VMID=$(whiptail --inputbox "Inserisci un ID per la nuova VM (es. 900):" 8 40 "900" 3>&1 1>&2 2>&3)
     [ -z "$VMID" ] && return
     
-    STORAGE=$(whiptail --inputbox "Inserisci lo storage ZFS di destinazione (es. local-zfs):" 8 40 "local-zfs" 3>&1 1>&2 2>&3)
+    STORAGE=$(whiptail --inputbox "Inserisci lo storage ZFS di destinazione:" 8 40 "local-zfs" 3>&1 1>&2 2>&3)
     [ -z "$STORAGE" ] && return
 
-    OS_CHOICE=$(whiptail --title "Selezione OS" \
-        --menu "Quale sistema operativo vuoi installare?" 12 60 2 \
-        "1" "Ubuntu 24.04 LTS (Noble)" \
-        "2" "Debian 13 (Trixie)" 3>&1 1>&2 2>&3)
+    OS_CHOICE=$(whiptail --menu "Quale sistema installare?" 12 60 2 "1" "Ubuntu 24.04 LTS" "2" "Debian 13 (Trixie)" 3>&1 1>&2 2>&3)
     [ -z "$OS_CHOICE" ] && return
 
-    cd /var/lib/vz/template/iso
+    # Richiesta ROM opzionale
+    ROM_FILE=$(whiptail --inputbox "Se hai posizionato un file vBIOS in /usr/share/kvm/, scrivine il nome (es. vbios.rom). Altrimenti lascia vuoto:" 10 70 "" 3>&1 1>&2 2>&3)
 
+    cd /var/lib/vz/template/iso
     if [ "$OS_CHOICE" = "1" ]; then
-        VM_NAME="Ubuntu24-AI-Test"
+        VM_NAME="Ubuntu24-Test"
         IMG_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
         IMG_FILE="noble-server-cloudimg-amd64.img"
     elif [ "$OS_CHOICE" = "2" ]; then
-        VM_NAME="Debian13-AI-Test"
+        VM_NAME="Debian13-Test"
         IMG_URL="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
         IMG_FILE="debian-13-genericcloud-amd64.qcow2"
     fi
 
-    echo -e "${GREEN}Scaricamento immagine Cloud-Init per $VM_NAME...${NC}"
+    echo -e "${GREEN}Scaricamento immagine...${NC}"
     wget -nc -q --show-progress "$IMG_URL" || true
 
-    if [ ! -f "$IMG_FILE" ]; then
-        echo -e "${RED}[ERRORE] Impossibile trovare l'immagine $IMG_FILE. Verifica la connessione a internet.${NC}"
-        read -p "Premi INVIO per tornare al menu..."
-        return
-    fi
-
-    echo -e "${GREEN}Creazione VM $VMID ($VM_NAME)...${NC}"
     qm create $VMID --name $VM_NAME --memory 8192 --cores 4 --net0 virtio,bridge=vmbr0
     qm importdisk $VMID $IMG_FILE $STORAGE
     
-    # Setup scsi controller e aggancio disco
     qm set $VMID --scsihw virtio-scsi-pci --scsi0 $STORAGE:vm-$VMID-disk-0
     qm set $VMID --ide2 $STORAGE:cloudinit
     qm set $VMID --boot c --bootdisk scsi0
     qm set $VMID --serial0 socket --vga serial0
     qm set $VMID --agent enabled=1
     
-    # Iniezione GPU PCI Passthrough diretto
-    SHORT_PCI=$(echo $GPU_PCI | cut -d':' -f2-)
-    qm set $VMID --hostpci0 $SHORT_PCI,pcie=1,x-vga=1
+    # Logica di Passthrough per Vendor
+    SHORT_PCI=$(echo $GPU_PCI | awk -F':' '{print $2":"$3}')
+    PT_OPTS="$SHORT_PCI,pcie=1"
+
+    if [[ "$VENDOR_NAME" == "NVIDIA" || "$VENDOR_NAME" == "AMD" ]]; then
+        PT_OPTS="${PT_OPTS},x-vga=1"
+    fi
     
-    # Espansione del disco per i test (40GB)
+    if [ -n "$ROM_FILE" ]; then
+        PT_OPTS="${PT_OPTS},romfile=$ROM_FILE"
+    fi
+
+    qm set $VMID --hostpci0 "$PT_OPTS"
     qm resize $VMID scsi0 40G
 
-    whiptail --title "Creazione VM Completata" --msgbox "La VM $VMID ($VM_NAME) è pronta sull'host Proxmox 9.\n\nSTEP SUCCESSIVI:\n1. Apri la Web GUI di Proxmox.\n2. Seleziona la VM -> Cloud-Init e imposta User, Password e/o chiavi SSH.\n3. Clicca su 'Regenerate Image'.\n\nAttenzione: Prima di accenderla, esegui l'Opzione 3 dello script per assegnarle la GPU!" 16 65
+    whiptail --title "VM Creata" --msgbox "VM creata con passthrough: $PT_OPTS\nRicorda di impostare le credenziali in Cloud-Init dalla Web GUI." 10 65
 }
 
 main_menu
