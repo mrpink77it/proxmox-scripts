@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Proxmox 9 - Multi-Vendor GPU Passthrough Manager (LXC <-> VM)
-# Versione: 1.0.0
+# Versione: 1.0.1
 # Supporto: NVIDIA, AMD, INTEL su ZFS + systemd-boot
 # ==============================================================================
 # DESCRIZIONE DETTAGLIATA E FUNZIONAMENTO:
@@ -44,7 +44,6 @@ AUD_PCI=""
 VENDOR=""
 VENDOR_NAME=""
 
-# Funzione per selezionare la GPU dal sistema
 select_gpu() {
     # Trova tutti i dispositivi VGA e 3D Controller
     local IFS=$'\n'
@@ -58,11 +57,18 @@ select_gpu() {
     local menu_options=()
     for gpu in "${gpu_list[@]}"; do
         local pci_id=$(echo "$gpu" | awk '{print $1}')
-        local desc=$(echo "$gpu" | cut -d':' -f3-)
+        # Estrae la descrizione, rimuove gli spazi iniziali e taglia la stringa della revisione per fare spazio
+        local desc=$(echo "$gpu" | cut -d':' -f3- | sed 's/^[ \t]*//' | sed 's/ (rev [0-9a-z]*)//')
         menu_options+=("$pci_id" "$desc")
     done
 
-    GPU_PCI=$(whiptail --title "Selezione GPU (v1.0.0)" --menu "Scegli la scheda video da gestire:" 15 80 4 "${menu_options[@]}" 3>&1 1>&2 2>&3)
+    # Descrizione introduttiva mostrata sopra la selezione
+    local INTRO_MSG="Questo script automatizza l'assegnazione dinamica delle GPU tra i container LXC (usando i driver dell'host) e le Macchine Virtuali (usando il passthrough diretto VFIO).\n\nPermette lo switch 'a caldo' dell'hardware senza dover riavviare Proxmox.\n\nScegli quale scheda video desideri gestire:"
+
+    # Finestra allargata a 100 colonne per far respirare il testo
+    GPU_PCI=$(whiptail --title "Selezione GPU (v1.0.1)" \
+        --menu "$INTRO_MSG" 22 100 4 "${menu_options[@]}" 3>&1 1>&2 2>&3)
+    
     [ -z "$GPU_PCI" ] && exit 0
 
     # Rileva il Vendor ID
@@ -87,14 +93,14 @@ main_menu() {
     select_gpu
 
     while true; do
-        CHOICE=$(whiptail --title "Proxmox 9 GPU Manager v1.0.0" \
-            --menu "GPU Selezionata: $GPU_PCI ($VENDOR_NAME)\nScegli un'operazione:" 21 75 6 \
+        CHOICE=$(whiptail --title "Proxmox 9 GPU Manager (v1.0.1)" \
+            --menu "GPU Selezionata: $GPU_PCI ($VENDOR_NAME)\n\nScegli un'operazione dal menu sottostante:" 22 95 6 \
             "1" "Configura Host (IOMMU su ZFS/systemd-boot)" \
             "2" "Crea VM Cloud-Init (Scelta Ubuntu 24 o Debian 13)" \
             "3" "ATTIVA VFIO (Assegna $VENDOR_NAME alla VM)" \
             "4" "RIPRISTINA DRIVER (Assegna $VENDOR_NAME agli LXC)" \
             "5" "Cambia GPU selezionata" \
-            "6" "Esci" 3>&1 1>&2 2>&3)
+            "6" "Esci dal programma" 3>&1 1>&2 2>&3)
             
         if [ $? -ne 0 ]; then break; fi
 
@@ -131,13 +137,13 @@ setup_host_iommu() {
     done
     update-initramfs -u -k all
 
-    whiptail --title "Riavvio Necessario" --msgbox "L'host è configurato per IOMMU. RIAVVIA PROXMOX 9 prima di usare il passthrough." 10 65
+    whiptail --title "Riavvio Necessario" --msgbox "L'host è configurato per IOMMU.\n\nRIAVVIA PROXMOX 9 prima di tentare l'assegnazione tramite VFIO." 10 70
 }
 
 bind_vfio() {
     clear
-    echo -e "${YELLOW}Ferma i container LXC che usano la GPU $GPU_PCI!${NC}"
-    read -p "Premi INVIO per continuare, CTRL+C per annullare..."
+    echo -e "${YELLOW}Ferma i container LXC che usano la GPU $GPU_PCI prima di procedere!${NC}"
+    read -p "Premi INVIO per continuare, oppure CTRL+C per annullare..."
     
     # Se è NVIDIA, ferma il persistenced
     if [ "$VENDOR_NAME" == "NVIDIA" ]; then
@@ -160,15 +166,15 @@ bind_vfio() {
         echo "$AUD_PCI" > /sys/bus/pci/drivers_probe
     fi
     
-    whiptail --title "VFIO Attivo" --msgbox "GPU $GPU_PCI agganciata a vfio-pci." 8 60
+    whiptail --title "VFIO Attivo" --msgbox "La GPU $GPU_PCI è stata sganciata dall'host e associata a vfio-pci.\n\nOra puoi avviare la VM in sicurezza." 10 70
 }
 
 bind_host() {
     clear
-    echo -e "${YELLOW}Assicurati che la VM sia SPENTA!${NC}"
-    read -p "Premi INVIO per continuare, CTRL+C per annullare..."
+    echo -e "${YELLOW}Assicurati che la VM di test sia completamente SPENTA!${NC}"
+    read -p "Premi INVIO per continuare, oppure CTRL+C per annullare..."
     
-    # Rimuovi VFIO override e lascia che il kernel carichi il driver corretto (nvidia, amdgpu, i915)
+    # Rimuovi VFIO override e lascia che il kernel carichi il driver corretto
     if [ -e "/sys/bus/pci/devices/$GPU_PCI/driver" ]; then
         echo -n "$GPU_PCI" > /sys/bus/pci/devices/$GPU_PCI/driver/unbind
     fi
@@ -190,21 +196,21 @@ bind_host() {
         /usr/bin/nvidia-smi >/dev/null 2>&1 || true
     fi
 
-    whiptail --title "Ripristino Completato" --msgbox "GPU $GPU_PCI riassegnata ai driver host nativi." 8 60
+    whiptail --title "Ripristino Completato" --msgbox "GPU $GPU_PCI riassegnata ai driver host nativi.\nI nodi in /dev/ sono stati rigenerati (se previsti).\n\nPuoi riavviare i container LXC." 10 70
 }
 
 create_test_vm() {
-    VMID=$(whiptail --inputbox "Inserisci un ID per la nuova VM (es. 900):" 8 40 "900" 3>&1 1>&2 2>&3)
+    VMID=$(whiptail --inputbox "Inserisci un ID per la nuova VM (es. 900):" 10 50 "900" 3>&1 1>&2 2>&3)
     [ -z "$VMID" ] && return
     
-    STORAGE=$(whiptail --inputbox "Inserisci lo storage ZFS di destinazione:" 8 40 "local-zfs" 3>&1 1>&2 2>&3)
+    STORAGE=$(whiptail --inputbox "Inserisci lo storage ZFS di destinazione:" 10 50 "local-zfs" 3>&1 1>&2 2>&3)
     [ -z "$STORAGE" ] && return
 
-    OS_CHOICE=$(whiptail --menu "Quale sistema installare?" 12 60 2 "1" "Ubuntu 24.04 LTS" "2" "Debian 13 (Trixie)" 3>&1 1>&2 2>&3)
+    OS_CHOICE=$(whiptail --menu "Quale sistema operativo vuoi installare?" 12 70 2 "1" "Ubuntu 24.04 LTS (Noble)" "2" "Debian 13 (Trixie)" 3>&1 1>&2 2>&3)
     [ -z "$OS_CHOICE" ] && return
 
     # Richiesta ROM opzionale
-    ROM_FILE=$(whiptail --inputbox "Se hai posizionato un file vBIOS in /usr/share/kvm/, scrivine il nome (es. vbios.rom). Altrimenti lascia vuoto:" 10 70 "" 3>&1 1>&2 2>&3)
+    ROM_FILE=$(whiptail --inputbox "Se hai caricato un file vBIOS in /usr/share/kvm/, scrivine il nome (es. vbios.rom).\nAltrimenti premi semplicemente INVIO:" 12 70 "" 3>&1 1>&2 2>&3)
 
     cd /var/lib/vz/template/iso
     if [ "$OS_CHOICE" = "1" ]; then
@@ -217,7 +223,7 @@ create_test_vm() {
         IMG_FILE="debian-13-genericcloud-amd64.qcow2"
     fi
 
-    echo -e "${GREEN}Scaricamento immagine...${NC}"
+    echo -e "${GREEN}Scaricamento immagine in corso...${NC}"
     wget -nc -q --show-progress "$IMG_URL" || true
 
     qm create $VMID --name $VM_NAME --memory 8192 --cores 4 --net0 virtio,bridge=vmbr0
@@ -244,7 +250,7 @@ create_test_vm() {
     qm set $VMID --hostpci0 "$PT_OPTS"
     qm resize $VMID scsi0 40G
 
-    whiptail --title "VM Creata" --msgbox "VM creata con passthrough: $PT_OPTS\nRicorda di impostare le credenziali in Cloud-Init dalla Web GUI." 10 65
+    whiptail --title "Creazione VM Completata" --msgbox "La VM $VMID è stata creata con il seguente passthrough:\n$PT_OPTS\n\nRicordati di impostare la password in Cloud-Init dall'interfaccia web di Proxmox e di usare il menu VFIO (Opzione 3) prima di accenderla." 12 75
 }
 
 main_menu
