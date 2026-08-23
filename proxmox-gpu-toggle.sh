@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Proxmox 9 - Multi-Vendor GPU Passthrough Manager (LXC <-> VM)
-# Versione: 1.0.6 (Con Setup Cloud-Init Integrato)
+# Versione: 1.0.7 (Fix Chipset q35 per PCIe Passthrough)
 # Supporto: NVIDIA, AMD, INTEL su ZFS + systemd-boot
 # ==============================================================================
 
@@ -37,7 +37,7 @@ select_gpu() {
 
     local INTRO_MSG="Questo script automatizza l'assegnazione dinamica delle GPU tra i container LXC e le Macchine Virtuali (passthrough VFIO).\n\nScegli quale scheda video desideri gestire:"
 
-    GPU_PCI=$(whiptail --title "Selezione GPU (v1.0.6)" \
+    GPU_PCI=$(whiptail --title "Selezione GPU (v1.0.7)" \
         --menu "$INTRO_MSG" 20 100 4 "${menu_options[@]}" 3>&1 1>&2 2>&3)
     
     [ -z "$GPU_PCI" ] && exit 0
@@ -76,7 +76,7 @@ main_menu() {
         menu_items+=("6" "Cambia GPU selezionata")
         menu_items+=("7" "Esci dal programma")
 
-        CHOICE=$(whiptail --title "Proxmox 9 GPU Manager (v1.0.6)" \
+        CHOICE=$(whiptail --title "Proxmox 9 GPU Manager (v1.0.7)" \
             --menu "GPU Selezionata: $GPU_PCI ($VENDOR_NAME)\n\nScegli un'operazione dal menu sottostante:" 22 95 7 \
             "${menu_items[@]}" 3>&1 1>&2 2>&3)
             
@@ -296,7 +296,8 @@ create_test_vm() {
     echo -e "${GREEN}Scaricamento immagine in corso...${NC}"
     wget -nc -q --show-progress "$IMG_URL" || true
 
-    qm create $VMID --name $VM_NAME --memory $VM_RAM --cores $VM_CORES --net0 virtio,bridge=vmbr0
+    # FIX: Aggiunto --machine q35 per supportare pcie=1
+    qm create $VMID --name $VM_NAME --memory $VM_RAM --cores $VM_CORES --net0 virtio,bridge=vmbr0 --machine q35
     qm importdisk $VMID $IMG_FILE $STORAGE
     
     qm set $VMID --scsihw virtio-scsi-pci --scsi0 $STORAGE:vm-$VMID-disk-0
