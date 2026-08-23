@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Proxmox 9 - Multi-Vendor GPU Passthrough Manager (LXC <-> VM)
-# Versione: 1.0.7 (Fix Chipset q35 per PCIe Passthrough)
+# Versione: 1.0.8 (Integrazione Spegnimento LXC)
 # Supporto: NVIDIA, AMD, INTEL su ZFS + systemd-boot
 # ==============================================================================
 
@@ -37,7 +37,7 @@ select_gpu() {
 
     local INTRO_MSG="Questo script automatizza l'assegnazione dinamica delle GPU tra i container LXC e le Macchine Virtuali (passthrough VFIO).\n\nScegli quale scheda video desideri gestire:"
 
-    GPU_PCI=$(whiptail --title "Selezione GPU (v1.0.7)" \
+    GPU_PCI=$(whiptail --title "Selezione GPU (v1.0.8)" \
         --menu "$INTRO_MSG" 20 100 4 "${menu_options[@]}" 3>&1 1>&2 2>&3)
     
     [ -z "$GPU_PCI" ] && exit 0
@@ -55,6 +55,37 @@ select_gpu() {
     
     if [[ "$GPU_PCI" != *":"*":"* ]]; then GPU_PCI="0000:$GPU_PCI"; fi
     if [[ -n "$AUD_PCI" && "$AUD_PCI" != *":"*":"* ]]; then AUD_PCI="0000:$AUD_PCI"; fi
+}
+
+stop_active_lxcs() {
+    # Legge solo i container attualmente in esecuzione
+    local running_lxcs=($(pct list | awk 'NR>1 && $2=="running" {print $1, $3}'))
+    
+    if [ ${#running_lxcs[@]} -eq 0 ]; then
+        return 0 # Nessun container acceso, procede direttamente
+    fi
+
+    local checklist_options=()
+    for ((i=0; i<${#running_lxcs[@]}; i+=2)); do
+        local vmid="${running_lxcs[$i]}"
+        local name="${running_lxcs[$i+1]}"
+        checklist_options+=("$vmid" "$name" "OFF")
+    done
+
+    local selected_lxcs=$(whiptail --title "Spegnimento Container LXC" \
+        --checklist "Seleziona i container associati a questa GPU da SPEGNERE prima di sganciarla.\n(Usa SPAZIO per selezionare, INVIO per confermare)" 15 75 5 \
+        "${checklist_options[@]}" 3>&1 1>&2 2>&3)
+
+    if [ -n "$selected_lxcs" ]; then
+        # Pulisce le virgolette dall'output di whiptail
+        selected_lxcs=$(echo "$selected_lxcs" | tr -d '"')
+        echo -e "${YELLOW}Spegnimento container in corso...${NC}"
+        for vmid in $selected_lxcs; do
+            pct stop "$vmid" || true
+            echo -e "${GREEN}LXC $vmid fermato.${NC}"
+        done
+        sleep 2
+    fi
 }
 
 main_menu() {
@@ -76,7 +107,7 @@ main_menu() {
         menu_items+=("6" "Cambia GPU selezionata")
         menu_items+=("7" "Esci dal programma")
 
-        CHOICE=$(whiptail --title "Proxmox 9 GPU Manager (v1.0.7)" \
+        CHOICE=$(whiptail --title "Proxmox 9 GPU Manager (v1.0.8)" \
             --menu "GPU Selezionata: $GPU_PCI ($VENDOR_NAME)\n\nScegli un'operazione dal menu sottostante:" 22 95 7 \
             "${menu_items[@]}" 3>&1 1>&2 2>&3)
             
@@ -132,6 +163,10 @@ setup_host_iommu() {
 dump_vbios() {
     clear
     LAST_DUMPED_ROM=""
+    
+    # Chiama la funzione per spegnere i container prima del dump
+    stop_active_lxcs
+    
     echo -e "${YELLOW}Preparazione per l'estrazione del vBIOS...${NC}"
     
     if [ "$VENDOR_NAME" == "NVIDIA" ]; then
@@ -170,8 +205,9 @@ dump_vbios() {
 
 bind_vfio() {
     clear
-    echo -e "${YELLOW}Ferma i container LXC che usano la GPU $GPU_PCI prima di procedere!${NC}"
-    read -p "Premi INVIO per continuare, oppure CTRL+C per annullare..."
+    
+    # Mostra l'interfaccia per spegnere i container al volo
+    stop_active_lxcs
     
     if [ "$VENDOR_NAME" == "NVIDIA" ]; then
         systemctl stop nvidia-persistenced 2>/dev/null || true
@@ -196,7 +232,7 @@ bind_vfio() {
 
 bind_host() {
     clear
-    echo -e "${YELLOW}Assicurati che la VM sia completamente SPENTA!${NC}"
+    echo -e "${YELLOW}Assicurati che la VM collegata a questa GPU sia completamente SPENTA!${NC}"
     read -p "Premi INVIO per continuare, oppure CTRL+C per annullare..."
     
     if [ -e "/sys/bus/pci/devices/$GPU_PCI/driver" ]; then
@@ -219,7 +255,7 @@ bind_host() {
         /usr/bin/nvidia-smi >/dev/null 2>&1 || true
     fi
 
-    whiptail --title "Ripristino Completato" --msgbox "GPU riassegnata ai driver host nativi. Puoi riavviare i container LXC." 10 70
+    whiptail --title "Ripristino Completato" --msgbox "GPU riassegnata ai driver host nativi. Ora puoi riaccendere i tuoi container LXC." 10 70
 }
 
 create_test_vm() {
@@ -254,7 +290,6 @@ create_test_vm() {
     OS_CHOICE=$(whiptail --title "Sistema Operativo" --menu "Quale sistema operativo vuoi installare tramite Cloud-Init?" 12 70 2 "1" "Ubuntu 24.04 LTS (Noble)" "2" "Debian 13 (Trixie)" 3>&1 1>&2 2>&3)
     [ -z "$OS_CHOICE" ] && return
     
-    # Cloud-Init Credenziali
     CI_USER=$(whiptail --title "Utente Cloud-Init" --inputbox "Inserisci il nome utente per l'accesso (es. ubuntu, debian, sysadmin):" 10 60 "sysadmin" 3>&1 1>&2 2>&3)
     [ -z "$CI_USER" ] && return
     
@@ -296,7 +331,6 @@ create_test_vm() {
     echo -e "${GREEN}Scaricamento immagine in corso...${NC}"
     wget -nc -q --show-progress "$IMG_URL" || true
 
-    # FIX: Aggiunto --machine q35 per supportare pcie=1
     qm create $VMID --name $VM_NAME --memory $VM_RAM --cores $VM_CORES --net0 virtio,bridge=vmbr0 --machine q35
     qm importdisk $VMID $IMG_FILE $STORAGE
     
@@ -306,7 +340,6 @@ create_test_vm() {
     qm set $VMID --serial0 socket --vga serial0
     qm set $VMID --agent enabled=1
     
-    # Applicazione Credenziali e Network Cloud-Init
     qm set $VMID --ciuser "$CI_USER" --cipassword "$CI_PASS" --ipconfig0 ip=dhcp
     
     SHORT_PCI=$(echo $GPU_PCI | awk -F':' '{print $2":"$3}')
@@ -323,7 +356,7 @@ create_test_vm() {
     qm set $VMID --hostpci0 "$PT_OPTS"
     qm resize $VMID scsi0 "${VM_DISK}G"
 
-    whiptail --title "Creazione VM Completata" --msgbox "La VM $VMID è completamente autonoma!\n\n- Credenziali: $CI_USER / [Nascosta]\n- Rete: DHCP Attivo\n\nPuoi preparare i driver GPU con l'Opzione 4 del menu e poi accendere la VM in tranquillità. Si configurerà da sola al primo boot." 15 75
+    whiptail --title "Creazione VM Completata" --msgbox "La VM $VMID è pronta!\n\n- Credenziali: $CI_USER / [Nascosta]\n- Rete: DHCP Attivo\n\nRicorda di attivare il VFIO (Opzione 4) se non l'hai già fatto, per sganciare la scheda dall'host prima di fare il boot." 15 75
 }
 
 main_menu
