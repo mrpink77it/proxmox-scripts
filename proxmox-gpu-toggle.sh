@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Proxmox 9 - Multi-Vendor GPU Passthrough Manager (LXC <-> VM)
-# Versione: 1.2.0 (Gestione dinamica Distro + Check Sicurezza IOMMU)
+# Versione: 1.3.0 (Solo distro Debian-compatibili: Debian/Ubuntu)
 # Supporto: NVIDIA, AMD, INTEL su ZFS + systemd-boot
 # ==============================================================================
 
@@ -24,14 +24,12 @@ LAST_DUMPED_ROM=""
 # ==============================================================================
 # Formato: "ID|Nome Mostrato nel Menu|Nome VM|URL Immagine|Nome File Locale"
 DISTROS=(
-    "1|Ubuntu 24.04 LTS (Noble)|Ubuntu24-Test|https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img|noble-server-cloudimg-amd64.img"
-    "2|Debian 13 (Trixie)|Debian13-Test|https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2|debian-13-genericcloud-amd64.qcow2"
-    "3|Fedora 42 (Cloud Base)|Fedora42-Test|https://download.fedoraproject.org/pub/fedora/linux/releases/42/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-42-1.1.x86_64.qcow2|Fedora-Cloud-Base-42.qcow2"
-    "4|openSUSE Tumbleweed (Minimal VM)|openSUSE-TW-Test|https://download.opensuse.org/tumbleweed/appliances/openSUSE-Tumbleweed-Minimal-VM.x86_64-kvm-and-xen.qcow2|openSUSE-Tumbleweed-Minimal-VM.qcow2"
-    "5|Arch Linux (Cloudimg ufficiale)|ArchLinux-Test|https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2|Arch-Linux-x86_64-cloudimg.qcow2"
-    "6|Rocky Linux 9 (GenericCloud)|Rocky9-Test|https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2|Rocky-9-GenericCloud-Base.qcow2"
-    "7|Alpine Linux 3.22 (NoCloud)|Alpine322-Test|https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.1-x86_64-bios-cloudinit-r0.qcow2|generic_alpine-3.22.1-x86_64-bios-cloudinit-r0.qcow2"
-    "8|AlmaLinux 9 (GenericCloud)|AlmaLinux9-Test|https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2|AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"
+    "1|Debian 11 (Bullseye)|Debian11-Test|https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-genericcloud-amd64.qcow2|debian-11-genericcloud-amd64.qcow2"
+    "2|Debian 12 (Bookworm)|Debian12-Test|https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2|debian-12-genericcloud-amd64.qcow2"
+    "3|Debian 13 (Trixie)|Debian13-Test|https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2|debian-13-genericcloud-amd64.qcow2"
+    "4|Ubuntu 20.04 LTS (Focal)|Ubuntu20-Test|https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img|focal-server-cloudimg-amd64.img"
+    "5|Ubuntu 22.04 LTS (Jammy)|Ubuntu22-Test|https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img|jammy-server-cloudimg-amd64.img"
+    "6|Ubuntu 24.04 LTS (Noble)|Ubuntu24-Test|https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img|noble-server-cloudimg-amd64.img"
 )
 
 select_gpu() {
@@ -52,7 +50,7 @@ select_gpu() {
 
     local INTRO_MSG="Questo script automatizza l'assegnazione dinamica delle GPU tra i container LXC e le Macchine Virtuali (passthrough VFIO).\n\nScegli quale scheda video desideri gestire:"
 
-    GPU_PCI=$(whiptail --title "Selezione GPU (v1.2.0)" \
+    GPU_PCI=$(whiptail --title "Selezione GPU (v1.3.0)" \
         --menu "$INTRO_MSG" 20 100 4 "${menu_options[@]}" 3>&1 1>&2 2>&3)
     
     [ -z "$GPU_PCI" ] && exit 0
@@ -303,7 +301,7 @@ create_test_vm() {
         OS_MENU_OPTIONS+=("$id" "$name")
     done
 
-    OS_CHOICE=$(whiptail --title "Sistema Operativo" --menu "Quale immagine cloud-init vuoi installare?" 18 80 8 "${OS_MENU_OPTIONS[@]}" 3>&1 1>&2 2>&3)
+    OS_CHOICE=$(whiptail --title "Sistema Operativo" --menu "Quale immagine cloud-init vuoi installare?" 18 80 6 "${OS_MENU_OPTIONS[@]}" 3>&1 1>&2 2>&3)
     [ -z "$OS_CHOICE" ] && return
     
     CI_USER=$(whiptail --title "Utente Cloud-Init" --inputbox "Inserisci il nome utente per l'accesso (es. ubuntu, debian, sysadmin):" 10 60 "sysadmin" 3>&1 1>&2 2>&3)
@@ -399,7 +397,7 @@ main_menu() {
         menu_items+=("6" "Cambia GPU selezionata")
         menu_items+=("7" "Esci dal programma")
 
-        CHOICE=$(whiptail --title "Proxmox 9 GPU Manager (v1.2.0)" \
+        CHOICE=$(whiptail --title "Proxmox 9 GPU Manager (v1.3.0)" \
             --menu "GPU Selezionata: $GPU_PCI ($VENDOR_NAME)\n\nScegli un'operazione dal menu sottostante:" 22 95 7 \
             "${menu_items[@]}" 3>&1 1>&2 2>&3)
             
