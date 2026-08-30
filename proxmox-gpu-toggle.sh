@@ -26,11 +26,11 @@ LAST_DUMPED_ROM=""
 DISTROS=(
     "1|Ubuntu 24.04 LTS (Noble)|Ubuntu24-Test|https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img|noble-server-cloudimg-amd64.img"
     "2|Debian 13 (Trixie)|Debian13-Test|https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2|debian-13-genericcloud-amd64.qcow2"
-    "3|Fedora 40 (Cloud Base)|Fedora40-Test|https://download.fedoraproject.org/pub/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-Generic.x86_64-40-1.14.qcow2|Fedora-Cloud-Base-40.qcow2"
-    "4|openSUSE Tumbleweed|openSUSE-TW-Test|https://download.opensuse.org/tumbleweed/appliances/openSUSE-Tumbleweed-JeOS.x86_64-kvm-and-xen.qcow2|openSUSE-Tumbleweed-JeOS.qcow2"
+    "3|Fedora 42 (Cloud Base)|Fedora42-Test|https://download.fedoraproject.org/pub/fedora/linux/releases/42/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-42-1.1.x86_64.qcow2|Fedora-Cloud-Base-42.qcow2"
+    "4|openSUSE Tumbleweed (Minimal VM)|openSUSE-TW-Test|https://download.opensuse.org/tumbleweed/appliances/openSUSE-Tumbleweed-Minimal-VM.x86_64-kvm-and-xen.qcow2|openSUSE-Tumbleweed-Minimal-VM.qcow2"
     "5|Arch Linux (Cloudimg ufficiale)|ArchLinux-Test|https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2|Arch-Linux-x86_64-cloudimg.qcow2"
-    "6|Omarchy Linux (Derivata Arch)|Omarchy-Test|https://omarchy.org/downloads/latest/omarchy-cloudimg-amd64.qcow2|omarchy-cloudimg-amd64.qcow2"
-    "7|Alpine Linux 3.20 (NoCloud)|Alpine320-Test|https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-nocloud-3.20.0-x86_64.qcow2|alpine-nocloud-3.20.0-x86_64.qcow2"
+    "6|Rocky Linux 9 (GenericCloud)|Rocky9-Test|https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2|Rocky-9-GenericCloud-Base.qcow2"
+    "7|Alpine Linux 3.22 (NoCloud)|Alpine322-Test|https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.1-x86_64-bios-cloudinit-r0.qcow2|generic_alpine-3.22.1-x86_64-bios-cloudinit-r0.qcow2"
     "8|AlmaLinux 9 (GenericCloud)|AlmaLinux9-Test|https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2|AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"
 )
 
