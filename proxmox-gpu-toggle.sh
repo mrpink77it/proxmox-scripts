@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Proxmox 9 - Multi-Vendor GPU Passthrough Manager (LXC <-> VM)
-# Versione: 1.0.9 (Display Default & Compute Profile per ROM-Bar)
+# Versione: 1.1.0 (Gestione dinamica Distro Cloud-Init in testata)
 # Supporto: NVIDIA, AMD, INTEL su ZFS + systemd-boot
 # ==============================================================================
 
@@ -18,6 +18,21 @@ AUD_PCI=""
 VENDOR=""
 VENDOR_NAME=""
 LAST_DUMPED_ROM=""
+
+# ==============================================================================
+# CONFIGURAZIONE DISTRIBUZIONI CLOUD-INIT
+# ==============================================================================
+# Formato: "ID|Nome Mostrato nel Menu|Nome VM|URL Immagine|Nome File Locale"
+DISTROS=(
+    "1|Ubuntu 24.04 LTS (Noble)|Ubuntu24-Test|https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img|noble-server-cloudimg-amd64.img"
+    "2|Debian 13 (Trixie)|Debian13-Test|https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2|debian-13-genericcloud-amd64.qcow2"
+    "3|Fedora 40 (Cloud Base)|Fedora40-Test|https://download.fedoraproject.org/pub/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-Generic.x86_64-40-1.14.qcow2|Fedora-Cloud-Base-40.qcow2"
+    "4|openSUSE Tumbleweed|openSUSE-TW-Test|https://download.opensuse.org/tumbleweed/appliances/openSUSE-Tumbleweed-JeOS.x86_64-kvm-and-xen.qcow2|openSUSE-Tumbleweed-JeOS.qcow2"
+    "5|Arch Linux (Cloudimg ufficiale)|ArchLinux-Test|https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2|Arch-Linux-x86_64-cloudimg.qcow2"
+    "6|Omarchy Linux (Derivata Arch)|Omarchy-Test|https://omarchy.org/downloads/latest/omarchy-cloudimg-amd64.qcow2|omarchy-cloudimg-amd64.qcow2"
+    "7|Alpine Linux 3.20 (NoCloud)|Alpine320-Test|https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-nocloud-3.20.0-x86_64.qcow2|alpine-nocloud-3.20.0-x86_64.qcow2"
+    "8|AlmaLinux 9 (GenericCloud)|AlmaLinux9-Test|https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2|AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"
+)
 
 select_gpu() {
     local IFS=$'\n'
@@ -37,7 +52,7 @@ select_gpu() {
 
     local INTRO_MSG="Questo script automatizza l'assegnazione dinamica delle GPU tra i container LXC e le Macchine Virtuali (passthrough VFIO).\n\nScegli quale scheda video desideri gestire:"
 
-    GPU_PCI=$(whiptail --title "Selezione GPU (v1.0.9)" \
+    GPU_PCI=$(whiptail --title "Selezione GPU (v1.1.0)" \
         --menu "$INTRO_MSG" 20 100 4 "${menu_options[@]}" 3>&1 1>&2 2>&3)
     
     [ -z "$GPU_PCI" ] && exit 0
@@ -105,7 +120,7 @@ main_menu() {
         menu_items+=("6" "Cambia GPU selezionata")
         menu_items+=("7" "Esci dal programma")
 
-        CHOICE=$(whiptail --title "Proxmox 9 GPU Manager (v1.0.9)" \
+        CHOICE=$(whiptail --title "Proxmox 9 GPU Manager (v1.1.0)" \
             --menu "GPU Selezionata: $GPU_PCI ($VENDOR_NAME)\n\nScegli un'operazione dal menu sottostante:" 22 95 7 \
             "${menu_items[@]}" 3>&1 1>&2 2>&3)
             
@@ -283,7 +298,14 @@ create_test_vm() {
     VM_DISK=$(whiptail --title "Assegnazione Disco" --inputbox "Quanto spazio su disco (in GB) vuoi assegnare?" 12 60 "40" 3>&1 1>&2 2>&3)
     [ -z "$VM_DISK" ] && return
 
-    OS_CHOICE=$(whiptail --title "Sistema Operativo" --menu "Quale sistema operativo vuoi installare tramite Cloud-Init?" 12 70 2 "1" "Ubuntu 24.04 LTS (Noble)" "2" "Debian 13 (Trixie)" 3>&1 1>&2 2>&3)
+    # Costruzione dinamica del menu partendo dall'array in testata
+    local OS_MENU_OPTIONS=()
+    for entry in "${DISTROS[@]}"; do
+        IFS='|' read -r id name vm_name url file <<< "$entry"
+        OS_MENU_OPTIONS+=("$id" "$name")
+    done
+
+    OS_CHOICE=$(whiptail --title "Sistema Operativo" --menu "Quale immagine cloud-init vuoi installare?" 18 80 8 "${OS_MENU_OPTIONS[@]}" 3>&1 1>&2 2>&3)
     [ -z "$OS_CHOICE" ] && return
     
     CI_USER=$(whiptail --title "Utente Cloud-Init" --inputbox "Inserisci il nome utente per l'accesso (es. ubuntu, debian, sysadmin):" 10 60 "sysadmin" 3>&1 1>&2 2>&3)
@@ -313,19 +335,28 @@ create_test_vm() {
         fi
     fi
 
-    cd /var/lib/vz/template/iso
-    if [ "$OS_CHOICE" = "1" ]; then
-        VM_NAME="Ubuntu24-Test"
-        IMG_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
-        IMG_FILE="noble-server-cloudimg-amd64.img"
-    elif [ "$OS_CHOICE" = "2" ]; then
-        VM_NAME="Debian13-Test"
-        IMG_URL="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
-        IMG_FILE="debian-13-genericcloud-amd64.qcow2"
-    fi
+    # Estrazione dei dati in base alla scelta dell'OS
+    for entry in "${DISTROS[@]}"; do
+        IFS='|' read -r id name vm_name url file <<< "$entry"
+        if [ "$id" == "$OS_CHOICE" ]; then
+            VM_NAME="$vm_name"
+            IMG_URL="$url"
+            IMG_FILE="$file"
+            break
+        fi
+    done
 
-    echo -e "${GREEN}Scaricamento immagine in corso...${NC}"
-    wget -nc -q --show-progress "$IMG_URL" || true
+    cd /var/lib/vz/template/iso
+    
+    if [ ! -f "$IMG_FILE" ]; then
+        echo -e "${GREEN}Scaricamento immagine in corso ($IMG_FILE)...${NC}"
+        wget -q --show-progress -O "$IMG_FILE" "$IMG_URL" || {
+            whiptail --title "Errore di Rete" --msgbox "Impossibile scaricare l'immagine. Verifica l'URL o la connessione." 10 70
+            return
+        }
+    else
+        echo -e "${YELLOW}Immagine $IMG_FILE già presente in cache. Salto il download.${NC}"
+    fi
 
     qm create $VMID --name $VM_NAME --memory $VM_RAM --cores $VM_CORES --net0 virtio,bridge=vmbr0 --machine q35
     qm importdisk $VMID $IMG_FILE $STORAGE
@@ -339,7 +370,6 @@ create_test_vm() {
     
     SHORT_PCI=$(echo $GPU_PCI | awk -F':' '{print $2":"$3}')
     
-    # Profilo Compute (rombar disabilitato, niente x-vga)
     PT_OPTS="$SHORT_PCI,pcie=1,rombar=0"
     
     if [ -n "$ROM_FILE" ]; then
@@ -349,7 +379,7 @@ create_test_vm() {
     qm set $VMID --hostpci0 "$PT_OPTS"
     qm resize $VMID scsi0 "${VM_DISK}G"
 
-    whiptail --title "Creazione VM Completata" --msgbox "La VM $VMID è pronta!\n\n- Credenziali: $CI_USER / [Nascosta]\n- Rete: DHCP Attivo\n\nRicorda di attivare il VFIO (Opzione 4) se non l'hai già fatto, per sganciare la scheda dall'host prima di fare il boot." 15 75
+    whiptail --title "Creazione VM Completata" --msgbox "La VM $VMID ($VM_NAME) è pronta!\n\n- Credenziali: $CI_USER / [Nascosta]\n- Rete: DHCP Attivo\n\nRicorda di attivare il VFIO (Opzione 4) se non l'hai già fatto, per sganciare la scheda dall'host prima di fare il boot." 15 75
 }
 
 main_menu
