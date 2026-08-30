@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Proxmox 9 - Multi-Vendor GPU Passthrough Manager (LXC <-> VM)
-# Versione: 1.1.0 (Gestione dinamica Distro Cloud-Init in testata)
+# Versione: 1.1.0 (Gestione dinamica Distro Cloud-Init)
 # Supporto: NVIDIA, AMD, INTEL su ZFS + systemd-boot
 # ==============================================================================
 
