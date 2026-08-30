@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Proxmox 9 - Multi-Vendor GPU Passthrough Manager (LXC <-> VM)
-# Versione: 1.1.0 (Gestione dinamica Distro Cloud-Init)
+# Versione: 1.2.0 (Gestione dinamica Distro + Check Sicurezza IOMMU)
 # Supporto: NVIDIA, AMD, INTEL su ZFS + systemd-boot
 # ==============================================================================
 
@@ -52,7 +52,7 @@ select_gpu() {
 
     local INTRO_MSG="Questo script automatizza l'assegnazione dinamica delle GPU tra i container LXC e le Macchine Virtuali (passthrough VFIO).\n\nScegli quale scheda video desideri gestire:"
 
-    GPU_PCI=$(whiptail --title "Selezione GPU (v1.1.0)" \
+    GPU_PCI=$(whiptail --title "Selezione GPU (v1.2.0)" \
         --menu "$INTRO_MSG" 20 100 4 "${menu_options[@]}" 3>&1 1>&2 2>&3)
     
     [ -z "$GPU_PCI" ] && exit 0
@@ -101,41 +101,38 @@ stop_active_lxcs() {
     fi
 }
 
-main_menu() {
-    select_gpu
+verify_iommu_topology() {
+    clear
+    echo -e "${CYAN}Analisi della topologia hardware IOMMU in corso...${NC}"
 
-    while true; do
-        local menu_items=()
-        
-        if ! grep -q "iommu=pt" /etc/kernel/cmdline; then
-            menu_items+=("1" "Configura Host (IOMMU su ZFS/systemd-boot)")
-        else
-            menu_items+=("1" "[GIÀ CONFIGURATO] Verifica/Ripeti setup IOMMU")
-        fi
-        
-        menu_items+=("2" "Estrai vBIOS dalla scheda video (DUMP ROM)")
-        menu_items+=("3" "Crea VM Cloud-Init (Wizard Completo)")
-        menu_items+=("4" "ATTIVA VFIO (Assegna $VENDOR_NAME alla VM)")
-        menu_items+=("5" "RIPRISTINA DRIVER (Assegna $VENDOR_NAME agli LXC)")
-        menu_items+=("6" "Cambia GPU selezionata")
-        menu_items+=("7" "Esci dal programma")
+    if [ ! -d "/sys/bus/pci/devices/$GPU_PCI/iommu_group" ]; then
+        whiptail --title "IOMMU Non Attivo" --msgbox "I gruppi IOMMU non sono stati rilevati dal kernel.\n\nAssicurati di aver riavviato Proxmox dopo la configurazione." 10 70
+        return
+    fi
 
-        CHOICE=$(whiptail --title "Proxmox 9 GPU Manager (v1.1.0)" \
-            --menu "GPU Selezionata: $GPU_PCI ($VENDOR_NAME)\n\nScegli un'operazione dal menu sottostante:" 22 95 7 \
-            "${menu_items[@]}" 3>&1 1>&2 2>&3)
-            
-        if [ $? -ne 0 ]; then break; fi
-
-        case $CHOICE in
-            1) setup_host_iommu ;;
-            2) dump_vbios ;;
-            3) create_test_vm ;;
-            4) bind_vfio ;;
-            5) bind_host ;;
-            6) select_gpu ;;
-            7) break ;;
-        esac
+    local IOMMU_GROUP_PATH=$(readlink "/sys/bus/pci/devices/$GPU_PCI/iommu_group")
+    local IOMMU_GROUP=$(basename "$IOMMU_GROUP_PATH")
+    
+    local GROUP_DEVICES=()
+    for dev in /sys/kernel/iommu_groups/"$IOMMU_GROUP"/devices/*; do
+        local dev_pci=$(basename "$dev")
+        local dev_desc=$(lspci -nns "$dev_pci")
+        GROUP_DEVICES+=("$dev_desc")
     done
+
+    local MSG="GPU Selezionata: $GPU_PCI ($VENDOR_NAME)\nGruppo IOMMU assegnato: $IOMMU_GROUP\n\nDispositivi intrappolati in questo gruppo:\n"
+    for d in "${GROUP_DEVICES[@]}"; do
+        MSG+="- $d\n"
+    done
+
+    # Una GPU + la sua interfaccia Audio generano max 2 device. Se sono > 2, c'è promiscuità.
+    if [ ${#GROUP_DEVICES[@]} -gt 2 ]; then
+        MSG+="\n[!] ATTENZIONE: Isolamento imperfetto!\nCi sono dispositivi aggiuntivi nel gruppo. Se includono USB dell'host, controller SATA/NVMe o schede di rete, il passthrough causerà il CRASH di Proxmox."
+        whiptail --title "Allerta Topologia (Gruppo $IOMMU_GROUP)" --msgbox "$MSG" 20 95
+    else
+        MSG+="\n[OK] ISOLAMENTO PERFETTO.\nLa scheda video è isolata correttamente nel gruppo $IOMMU_GROUP e sicura per il passthrough."
+        whiptail --title "Verifica Superata (Gruppo $IOMMU_GROUP)" --msgbox "$MSG" 16 95
+    fi
 }
 
 setup_host_iommu() {
@@ -167,9 +164,10 @@ setup_host_iommu() {
     if [ $CHANGED -eq 1 ]; then
         echo -e "${YELLOW}Applicazione modifiche a initramfs...${NC}"
         update-initramfs -u -k all
-        whiptail --title "Riavvio Necessario" --msgbox "L'host è stato appena configurato per IOMMU.\n\nRIAVVIA PROXMOX prima di tentare l'assegnazione tramite VFIO." 10 70
+        whiptail --title "Riavvio Necessario" --msgbox "L'host è stato appena configurato per IOMMU.\n\nRIAVVIA PROXMOX per generare i gruppi IOMMU prima di tentare l'assegnazione tramite VFIO." 10 70
     else
-        whiptail --title "IOMMU Già Attivo" --msgbox "L'host Proxmox è già configurato per il passthrough.\n\nNon è necessario alcun riavvio." 10 70
+        whiptail --title "IOMMU Già Attivo" --msgbox "L'host Proxmox è già configurato per il passthrough.\n\nProcediamo con l'analisi della topologia hardware per confermare l'isolamento della GPU." 10 70
+        verify_iommu_topology
     fi
 }
 
@@ -382,4 +380,42 @@ create_test_vm() {
     whiptail --title "Creazione VM Completata" --msgbox "La VM $VMID ($VM_NAME) è pronta!\n\n- Credenziali: $CI_USER / [Nascosta]\n- Rete: DHCP Attivo\n\nRicorda di attivare il VFIO (Opzione 4) se non l'hai già fatto, per sganciare la scheda dall'host prima di fare il boot." 15 75
 }
 
+main_menu() {
+    select_gpu
+
+    while true; do
+        local menu_items=()
+        
+        if ! grep -q "iommu=pt" /etc/kernel/cmdline; then
+            menu_items+=("1" "Configura Host (IOMMU su ZFS/systemd-boot)")
+        else
+            menu_items+=("1" "[GIÀ CONFIGURATO] Verifica isolamento hardware IOMMU")
+        fi
+        
+        menu_items+=("2" "Estrai vBIOS dalla scheda video (DUMP ROM)")
+        menu_items+=("3" "Crea VM Cloud-Init (Wizard Completo)")
+        menu_items+=("4" "ATTIVA VFIO (Assegna $VENDOR_NAME alla VM)")
+        menu_items+=("5" "RIPRISTINA DRIVER (Assegna $VENDOR_NAME agli LXC)")
+        menu_items+=("6" "Cambia GPU selezionata")
+        menu_items+=("7" "Esci dal programma")
+
+        CHOICE=$(whiptail --title "Proxmox 9 GPU Manager (v1.2.0)" \
+            --menu "GPU Selezionata: $GPU_PCI ($VENDOR_NAME)\n\nScegli un'operazione dal menu sottostante:" 22 95 7 \
+            "${menu_items[@]}" 3>&1 1>&2 2>&3)
+            
+        if [ $? -ne 0 ]; then break; fi
+
+        case $CHOICE in
+            1) setup_host_iommu ;;
+            2) dump_vbios ;;
+            3) create_test_vm ;;
+            4) bind_vfio ;;
+            5) bind_host ;;
+            6) select_gpu ;;
+            7) break ;;
+        esac
+    done
+}
+
+# Avvio script
 main_menu
