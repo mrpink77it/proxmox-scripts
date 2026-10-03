@@ -41,7 +41,6 @@ file_picker() {
     while true; do
         shopt -s nullglob
         local dirs=("$current_dir"/*/)
-        # Filtra solo i file di backup LXC comuni
         local files=("$current_dir"/*.tar.zst "$current_dir"/*.tar.gz "$current_dir"/*.tar.lzo)
         shopt -u nullglob
         
@@ -56,10 +55,9 @@ file_picker() {
         done
         
         local selection
-        selection=$(whiptail --title "Seleziona File di Backup" --menu "Esplora: $current_dir\nScegli un file o naviga nelle cartelle:" 22 75 14 "${options[@]}" 3>&1 1>&2 2>&3)
+        selection=$(whiptail --title "Seleziona File di Backup" --menu "Esplora: $current_dir\nScegli un file o naviga:" 22 75 14 "${options[@]}" 3>&1 1>&2 2>&3)
         
         if [ $? -ne 0 ]; then
-            echo ""
             return 1
         fi
         
@@ -86,18 +84,19 @@ CHOICE=$(whiptail --title "Proxmox LXC Manager" --menu "Scegli la modalità di e
     3>&1 1>&2 2>&3)
 
 if [ $? -ne 0 ]; then
+    log "Selezione menu annullata dall'utente."
     echo "Operazione annullata."
     exit 0
 fi
 
 # =======================================================
-# STEP 1: Parametri di Base (Dipende dalla scelta)
+# STEP 1: Parametri di Base
 # =======================================================
 log "Avvio STEP 1 (Modalità $CHOICE)..."
 
 if [ "$CHOICE" == "1" ]; then
     # -- FORM MIGRAZIONE LIVE --
-    FORM_BASE=$(whiptail --title "Migrazione Live (1/2) - Server e Path" --form "Inserisci i parametri (Frecce, TAB):" 0 0 0 \
+    FORM_BASE=$(whiptail --title "Migrazione Live (1/2) - Server e Path" --form "Inserisci i parametri di migrazione:" 20 75 7 \
       "CTID Origine:" 1 1 "" 1 30 15 0 \
       "CTID Destinazione:" 2 1 "" 2 30 15 0 \
       "IP Server Remoto:" 3 1 "" 3 30 20 0 \
@@ -107,25 +106,40 @@ if [ "$CHOICE" == "1" ]; then
       "Tmp Remoto (es. /mnt/disk2):" 7 1 "/mnt/tmp_remoto" 7 30 25 0 \
       3>&1 1>&2 2>&3)
     
-    if [ $? -ne 0 ]; then exit 1; fi
-    CTID=$(echo "$FORM_BASE" | sed -n '1p')
-    NEW_CTID=$(echo "$FORM_BASE" | sed -n '2p')
-    REMOTE_HOST=$(echo "$FORM_BASE" | sed -n '3p')
-    REMOTE_PORT=$(echo "$FORM_BASE" | sed -n '4p')
-    REMOTE_STORAGE=$(echo "$FORM_BASE" | sed -n '5p')
-    LOCAL_TMP_DIR=$(echo "$FORM_BASE" | sed -n '6p')
-    REMOTE_TMP_DIR=$(echo "$FORM_BASE" | sed -n '7p')
+    WT_STATUS=$?
+    if [ $WT_STATUS -ne 0 ]; then
+        log "Form Grafica Opzione 1 fallita o annullata. Attivazione fallback CLI."
+        echo "⚠️  Attenzione: Interfaccia grafica non disponibile o annullata."
+        echo "👇 Passaggio alla modalità testuale:"
+        read -p "CTID Origine: " CTID
+        read -p "CTID Destinazione: " NEW_CTID
+        read -p "IP Server Remoto: " REMOTE_HOST
+        read -p "Porta SSH Remota [22]: " REMOTE_PORT; REMOTE_PORT=${REMOTE_PORT:-22}
+        read -p "Storage Destinazione [local-lvm]: " REMOTE_STORAGE; REMOTE_STORAGE=${REMOTE_STORAGE:-local-lvm}
+        read -p "Cartella Tmp Locale [/mnt/tmp_locale]: " LOCAL_TMP_DIR; LOCAL_TMP_DIR=${LOCAL_TMP_DIR:-/mnt/tmp_locale}
+        read -p "Cartella Tmp Remota [/mnt/tmp_remoto]: " REMOTE_TMP_DIR; REMOTE_TMP_DIR=${REMOTE_TMP_DIR:-/mnt/tmp_remoto}
+        USE_FALLBACK=1
+    else
+        CTID=$(echo "$FORM_BASE" | sed -n '1p')
+        NEW_CTID=$(echo "$FORM_BASE" | sed -n '2p')
+        REMOTE_HOST=$(echo "$FORM_BASE" | sed -n '3p')
+        REMOTE_PORT=$(echo "$FORM_BASE" | sed -n '4p')
+        REMOTE_STORAGE=$(echo "$FORM_BASE" | sed -n '5p')
+        LOCAL_TMP_DIR=$(echo "$FORM_BASE" | sed -n '6p')
+        REMOTE_TMP_DIR=$(echo "$FORM_BASE" | sed -n '7p')
+    fi
 
 elif [ "$CHOICE" == "2" ]; then
     # -- SELEZIONE FILE E FORM RIPRISTINO --
     BACKUP_FILE=$(file_picker "/Storage/tmp")
     if [ -z "$BACKUP_FILE" ]; then 
+        log "Nessun file selezionato nel file_picker."
         echo "❌ Nessun file selezionato. Interruzione."
         exit 1
     fi
     log "Backup selezionato: $BACKUP_FILE"
     
-    FORM_BASE=$(whiptail --title "Ripristino (1/2) - Server e Path" --form "File scelto: $(basename $BACKUP_FILE)\nInserisci i parametri:" 0 0 0 \
+    FORM_BASE=$(whiptail --title "Ripristino (1/2) - Server e Path" --form "Configura il ripristino per $(basename "$BACKUP_FILE"):" 19 75 6 \
       "CTID Destinazione:" 1 1 "" 1 32 15 0 \
       "IP Server Remoto:" 2 1 "" 2 32 20 0 \
       "Porta SSH Remota:" 3 1 "22" 3 32 10 0 \
@@ -134,16 +148,30 @@ elif [ "$CHOICE" == "2" ]; then
       "Nuovo Disco GB (vuoto=default):" 6 1 "" 6 32 10 0 \
       3>&1 1>&2 2>&3)
       
-    if [ $? -ne 0 ]; then exit 1; fi
-    NEW_CTID=$(echo "$FORM_BASE" | sed -n '1p')
-    REMOTE_HOST=$(echo "$FORM_BASE" | sed -n '2p')
-    REMOTE_PORT=$(echo "$FORM_BASE" | sed -n '3p')
-    REMOTE_STORAGE=$(echo "$FORM_BASE" | sed -n '4p')
-    REMOTE_TMP_DIR=$(echo "$FORM_BASE" | sed -n '5p')
-    NEW_SIZE_GB=$(echo "$FORM_BASE" | sed -n '6p')
+    WT_STATUS=$?
+    if [ $WT_STATUS -ne 0 ]; then
+        log "Form Grafica Opzione 2 fallita o annullata. Attivazione fallback CLI."
+        echo "⚠️  Attenzione: Interfaccia grafica non disponibile o annullata."
+        echo "👇 Passaggio alla modalità testuale:"
+        read -p "CTID Destinazione: " NEW_CTID
+        read -p "IP Server Remoto: " REMOTE_HOST
+        read -p "Porta SSH Remota [22]: " REMOTE_PORT; REMOTE_PORT=${REMOTE_PORT:-22}
+        read -p "Storage Destinazione [local-lvm]: " REMOTE_STORAGE; REMOTE_STORAGE=${REMOTE_STORAGE:-local-lvm}
+        read -p "Cartella Tmp Remota [/mnt/tmp_remoto]: " REMOTE_TMP_DIR; REMOTE_TMP_DIR=${REMOTE_TMP_DIR:-/mnt/tmp_remoto}
+        read -p "Nuovo Disco GB (lascia vuoto per default): " NEW_SIZE_GB
+        USE_FALLBACK=1
+    else
+        NEW_CTID=$(echo "$FORM_BASE" | sed -n '1p')
+        REMOTE_HOST=$(echo "$FORM_BASE" | sed -n '2p')
+        REMOTE_PORT=$(echo "$FORM_BASE" | sed -n '3p')
+        REMOTE_STORAGE=$(echo "$FORM_BASE" | sed -n '4p')
+        REMOTE_TMP_DIR=$(echo "$FORM_BASE" | sed -n '5p')
+        NEW_SIZE_GB=$(echo "$FORM_BASE" | sed -n '6p')
+    fi
 fi
 
 if [ -z "$NEW_CTID" ] || [ -z "$REMOTE_HOST" ]; then
+    log "Parametri fondamentali (NEW_CTID o REMOTE_HOST) mancanti."
     echo "❌ Parametri fondamentali mancanti! Interruzione."
     exit 1
 fi
@@ -152,31 +180,52 @@ fi
 # STEP 2: Risorse e Rete
 # =======================================================
 log "Avvio STEP 2..."
-FORM_HW=$(whiptail --title "Configurazione (2/2) - Risorse e Rete" --form "Sovrascrivi le risorse del CT remoto:" 0 0 0 \
-  "Cores CPU:" 1 1 "2" 1 25 10 0 \
-  "RAM (MB):" 2 1 "2048" 2 25 10 0 \
-  "Bridge (es. vmbr0):" 3 1 "vmbr0" 3 25 15 0 \
-  "IPv4/CIDR (o dhcp):" 4 1 "dhcp" 4 25 20 0 \
-  "Gateway IPv4 (opz):" 5 1 "" 5 25 20 0 \
-  "Server DNS (opz):" 6 1 "" 6 25 20 0 \
-  3>&1 1>&2 2>&3)
+if [ $USE_FALLBACK -eq 0 ]; then
+    FORM_HW=$(whiptail --title "Configurazione (2/2) - Risorse e Rete" --form "Configura risorse e rete remote:" 19 75 6 \
+      "Cores CPU:" 1 1 "2" 1 25 10 0 \
+      "RAM (MB):" 2 1 "2048" 2 25 10 0 \
+      "Bridge (es. vmbr0):" 3 1 "vmbr0" 3 25 15 0 \
+      "IPv4/CIDR (o dhcp):" 4 1 "dhcp" 4 25 20 0 \
+      "Gateway IPv4 (opz):" 5 1 "" 5 25 20 0 \
+      "Server DNS (opz):" 6 1 "" 6 25 20 0 \
+      3>&1 1>&2 2>&3)
 
-if [ $? -ne 0 ]; then exit 1; fi
-CORES=$(echo "$FORM_HW" | sed -n '1p')
-RAM=$(echo "$FORM_HW" | sed -n '2p')
-BRIDGE=$(echo "$FORM_HW" | sed -n '3p')
-IP=$(echo "$FORM_HW" | sed -n '4p')
-GW=$(echo "$FORM_HW" | sed -n '5p')
-DNS=$(echo "$FORM_HW" | sed -n '6p')
+    if [ $? -ne 0 ]; then 
+        log "Step 2 annullato."
+        exit 1
+    fi
+    CORES=$(echo "$FORM_HW" | sed -n '1p')
+    RAM=$(echo "$FORM_HW" | sed -n '2p')
+    BRIDGE=$(echo "$FORM_HW" | sed -n '3p')
+    IP=$(echo "$FORM_HW" | sed -n '4p')
+    GW=$(echo "$FORM_HW" | sed -n '5p')
+    DNS=$(echo "$FORM_HW" | sed -n '6p')
 
-if whiptail --title "Avvio Automatico" --yesno "Vuoi avviare il container automaticamente alla fine?" 0 0; then
-    START_CT="yes"
+    if whiptail --title "Avvio Automatico" --yesno "Vuoi avviare il container automaticamente alla fine?" 10 60; then
+        START_CT="yes"
+    else
+        START_CT="no"
+    fi
+
+    REMOTE_PASS=$(whiptail --title "Autenticazione SSH" --passwordbox "Inserisci la password di root per $REMOTE_HOST:" 10 60 3>&1 1>&2 2>&3)
+    if [ $? -ne 0 ]; then 
+        log "Inserimento password annullato."
+        exit 1
+    fi
 else
-    START_CT="no"
+    echo "--------------------------------------------------------"
+    read -p "Cores CPU [2]: " CORES; CORES=${CORES:-2}
+    read -p "RAM (MB) [2048]: " RAM; RAM=${RAM:-2048}
+    read -p "Bridge [vmbr0]: " BRIDGE; BRIDGE=${BRIDGE:-vmbr0}
+    read -p "IPv4/CIDR (o dhcp) [dhcp]: " IP; IP=${IP:-dhcp}
+    read -p "Gateway IPv4 (lascia vuoto se dhcp): " GW
+    read -p "Server DNS (lascia vuoto se default): " DNS
+    read -p "Avviare il container alla fine? (y/n) [n]: " START_ANS
+    if [[ "$START_ANS" =~ ^[Yy]$ ]]; then START_CT="yes"; else START_CT="no"; fi
+    
+    read -s -p "Password di root per $REMOTE_HOST: " REMOTE_PASS
+    echo ""
 fi
-
-REMOTE_PASS=$(whiptail --title "Autenticazione SSH" --passwordbox "Inserisci la password di root per il server remoto ($REMOTE_HOST):" 0 0 3>&1 1>&2 2>&3)
-if [ $? -ne 0 ]; then exit 1; fi
 
 export SSHPASS="$REMOTE_PASS"
 SSH_CMD="sshpass -e ssh -o StrictHostKeyChecking=no -p $REMOTE_PORT root@$REMOTE_HOST"
@@ -218,6 +267,7 @@ if [ "$CHOICE" == "1" ]; then
     mkdir -p "$LOCAL_TMP_DIR"
     vzdump $CTID --mode snapshot --compress zstd --dumpdir "$LOCAL_TMP_DIR" >> "$LOG_FILE" 2>&1
     if [ $? -ne 0 ]; then
+        log "Errore durante vzdump."
         echo "❌ Errore durante il backup! Controlla $LOG_FILE."
         exit 1
     fi
@@ -234,6 +284,7 @@ echo "⏳ [3/6] Trasferimento del backup al nodo remoto via SCP..."
 $SSH_CMD "mkdir -p $REMOTE_TMP_DIR" >> "$LOG_FILE" 2>&1
 $SCP_CMD "$BACKUP_FILE" "root@$REMOTE_HOST:$REMOTE_TMP_DIR/" >> "$LOG_FILE" 2>&1
 if [ $? -ne 0 ]; then
+    log "Errore durante trasferimento SCP."
     echo "❌ Errore durante il trasferimento SCP! Rete down o password errata?"
     exit 1
 fi
@@ -241,21 +292,20 @@ fi
 # --- FASE 4: RIPRISTINO ---
 if [ -n "$NEW_SIZE_GB" ]; then
     echo "⏳ [4/6] Ripristino di $NEW_CTID forzando la dimensione disco a ${NEW_SIZE_GB}GB..."
-    # Qui Proxmox si aspetta SOLO il numero (senza G) come verificato.
     $SSH_CMD "pct restore $NEW_CTID $REMOTE_TMP_DIR/$FILE_NAME --rootfs $REMOTE_STORAGE:${NEW_SIZE_GB} --force" >> "$LOG_FILE" 2>&1
 else
     echo "⏳ [4/6] Ripristino di $NEW_CTID mantenendo la dimensione originale del disco..."
-    # Se vuoto, Proxmox leggerà la grandezza dal file di configurazione interno al tar.
     $SSH_CMD "pct restore $NEW_CTID $REMOTE_TMP_DIR/$FILE_NAME --storage $REMOTE_STORAGE --force" >> "$LOG_FILE" 2>&1
 fi
 
 if [ $? -ne 0 ]; then
-    echo "❌ Errore durante il ripristino! Controlla i log remoti o $LOG_FILE."
+    log "Errore durante pct restore sul server remoto."
+    echo "❌ Errore durante il ripristino! Controlla $LOG_FILE."
     exit 1
 fi
 
 # --- FASE 5: RETE E HARDWARE ---
-echo "⏳ [5/6] Applicazione configurazione Hardware e Rete (sovrascrittura)..."
+echo "⏳ [5/6] Applicazione configurazione Hardware e Rete..."
 NET_CMD="name=eth0,bridge=$BRIDGE,ip=$IP"
 if [ -n "$GW" ] && [ "$IP" != "dhcp" ]; then
     NET_CMD="$NET_CMD,gw=$GW"
@@ -268,9 +318,7 @@ fi
 
 # --- FASE 6: PULIZIA ---
 echo "⏳ [6/6] Pulizia dei file temporanei..."
-# Rimuoviamo il file remoto
 $SSH_CMD "rm -f $REMOTE_TMP_DIR/$FILE_NAME" >> "$LOG_FILE" 2>&1
-# Rimuoviamo il file locale SOLO se è stato generato in modalità Live Migrazione
 if [ "$CHOICE" == "1" ]; then
     rm -f "$BACKUP_FILE"
 fi
