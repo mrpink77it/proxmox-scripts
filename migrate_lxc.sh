@@ -176,11 +176,11 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 4. Ripristino
+# 4. Ripristino (Modifica della 'G' rimossa qui sotto)
 echo "⏳ [4/6] Ripristino del container ID $NEW_CTID (Dimensione: ${NEW_SIZE_GB}G)..."
-$SSH_CMD "pct restore $NEW_CTID $REMOTE_TMP_DIR/$FILE_NAME --rootfs $REMOTE_STORAGE:${NEW_SIZE_GB}G --force" >> "$LOG_FILE" 2>&1
+$SSH_CMD "pct restore $NEW_CTID $REMOTE_TMP_DIR/$FILE_NAME --rootfs $REMOTE_STORAGE:${NEW_SIZE_GB} --force" >> "$LOG_FILE" 2>&1
 if [ $? -ne 0 ]; then
-    echo "❌ Errore durante il ripristino remoto!"
+    echo "❌ Errore durante il ripristino remoto! (Guarda $LOG_FILE sul server ORIGINE per i dettagli dell'output remoto)"
     exit 1
 fi
 
