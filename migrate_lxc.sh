@@ -10,9 +10,13 @@ fi
 
 echo "Verifica dipendenze (whiptail, sshpass)..."
 if ! command -v whiptail &> /dev/null || ! command -v sshpass &> /dev/null; then
-    apt-get update -qq
-    apt-get install -y whiptail sshpass -qq
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq > /dev/null 2>&1
+    apt-get install -yq whiptail sshpass > /dev/null 2>&1
 fi
+
+# Pulisce lo schermo per evitare problemi grafici con whiptail
+clear
 
 # 2. Interfaccia TUI - STEP 1: Parametri di Base
 FORM_BASE=$(whiptail --title "Migrazione LXC (1/2) - Server e Path" --form "Inserisci i parametri del server (Usa le frecce per muoverti, TAB per bottoni):" 22 75 7 \
@@ -74,7 +78,7 @@ export SSHPASS="$REMOTE_PASS"
 SSH_CMD="sshpass -e ssh -o StrictHostKeyChecking=no -p $REMOTE_PORT root@$REMOTE_HOST"
 SCP_CMD="sshpass -e scp -o StrictHostKeyChecking=no -P $REMOTE_PORT"
 
-echo ""
+clear
 echo "=========================================================="
 echo "🚀 INIZIO PROCEDURA DI MIGRAZIONE LXC $CTID -> $NEW_CTID"
 echo "=========================================================="
