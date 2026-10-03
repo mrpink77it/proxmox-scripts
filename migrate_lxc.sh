@@ -1,5 +1,5 @@
 #!/bin/bash
-# Script TUI/CLI per la migrazione e ripristino di container LXC su Proxmox
+# Script per la migrazione e ripristino di container LXC su Proxmox
 
 # Protezione da disconnessioni brutali dell'SSH mentre 'screen' è in esecuzione
 trap "" HUP
@@ -171,7 +171,7 @@ elif [ "$CHOICE" == "2" ]; then
 fi
 
 if [ -z "$NEW_CTID" ] || [ -z "$REMOTE_HOST" ]; then
-    log "Parametri fondamentali (NEW_CTID o REMOTE_HOST) mancanti."
+    log "Parametri fondamentali mancanti."
     echo "❌ Parametri fondamentali mancanti! Interruzione."
     exit 1
 fi
@@ -228,8 +228,10 @@ else
 fi
 
 export SSHPASS="$REMOTE_PASS"
-SSH_CMD="sshpass -e ssh -o StrictHostKeyChecking=no -p $REMOTE_PORT root@$REMOTE_HOST"
-SCP_CMD="sshpass -e scp -o StrictHostKeyChecking=no -P $REMOTE_PORT"
+# Opzioni SSH con KeepAlive avanzato per evitare timeout durante trasferimenti lunghi
+SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=240 -o ConnectTimeout=30"
+SSH_CMD="sshpass -e ssh $SSH_OPTS -p $REMOTE_PORT root@$REMOTE_HOST"
+SCP_CMD="sshpass -e scp $SSH_OPTS -P $REMOTE_PORT"
 
 # =======================================================
 # ESECUZIONE
@@ -274,19 +276,29 @@ if [ "$CHOICE" == "1" ]; then
     BACKUP_FILE=$(ls -t $LOCAL_TMP_DIR/vzdump-lxc-$CTID-*.tar.zst | head -n 1)
 else
     echo "⏳ [1/6 & 2/6] Utilizzo backup esistente selezionato..."
-    echo "   ✅ File: $BACKUP_FILE"
+    echo "   ✅ File locale: $BACKUP_FILE"
 fi
 
 FILE_NAME=$(basename "$BACKUP_FILE")
 
-# --- FASE 3: TRASFERIMENTO ---
-echo "⏳ [3/6] Trasferimento del backup al nodo remoto via SCP..."
+# --- FASE 3: TRASFERIMENTO INTELLIGENTE ---
+echo "⏳ [3/6] Verifica presenza file sul nodo remoto..."
 $SSH_CMD "mkdir -p $REMOTE_TMP_DIR" >> "$LOG_FILE" 2>&1
-$SCP_CMD "$BACKUP_FILE" "root@$REMOTE_HOST:$REMOTE_TMP_DIR/" >> "$LOG_FILE" 2>&1
-if [ $? -ne 0 ]; then
-    log "Errore durante trasferimento SCP."
-    echo "❌ Errore durante il trasferimento SCP! Rete down o password errata?"
-    exit 1
+
+LOCAL_SIZE=$(stat -c%s "$BACKUP_FILE" 2>/dev/null || echo "0")
+REMOTE_SIZE=$($SSH_CMD "stat -c%s '$REMOTE_TMP_DIR/$FILE_NAME' 2>/dev/null || echo '0'" | tr -d '\r\n')
+
+if [ "$LOCAL_SIZE" -gt 0 ] && [ "$LOCAL_SIZE" -eq "$REMOTE_SIZE" ]; then
+    echo "   ✅ File già interamente presente sul server remoto ($REMOTE_SIZE byte). Trasferimento saltato!"
+    log "File già presente sul server remoto con dimensione identica. SCP saltato."
+else
+    echo "   🚀 File non presente o incompleto sul remoto ($REMOTE_SIZE / $LOCAL_SIZE byte). Avvio trasferimento..."
+    $SCP_CMD "$BACKUP_FILE" "root@$REMOTE_HOST:$REMOTE_TMP_DIR/" >> "$LOG_FILE" 2>&1
+    if [ $? -ne 0 ]; then
+        log "Errore durante trasferimento SCP."
+        echo "❌ Errore durante il trasferimento SCP! Rete down o password errata?"
+        exit 1
+    fi
 fi
 
 # --- FASE 4: RIPRISTINO ---
