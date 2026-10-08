@@ -1,7 +1,9 @@
-# Script per spostare file da una cartella dell'host proxmox a una dentro un container LXC
+#!/bin/bash
 
-CTID="100" # Inserisci il numero del tuo container di destinazione
-SRC_DIR="/srv/temp/music"
+# Parameter Definition INSERT IN CTID="100" NUMBER OF YOUR NAVIDROME LXC
+CTID="100"
+##########
+SRC_DIR="/root/music"
 DEST_DIR="/opt/navidrome/music"
 
 # Enable globbing to include hidden files if any, and handle empty directory safely
