@@ -11,6 +11,13 @@ Questo repository nasce come "raccoglitore" personale di strumenti, snippet e sc
 ⚠️ **Stato del progetto: Sempre in WIP (Work in Progress).**
 Non si tratta di una suite software statica e preconfezionata, ma di una cassetta degli attrezzi in continua espansione. Gli script vengono aggiunti, affinati o aggiornati man mano che ne ho bisogno per amministrare le mie macchine.
 
+Esegui il comando nella tua shell
+
+   ```bash
+   wget https://github.com/mrpink77it/proxmox-scripts/blob/main/install.sh && chmod +x *.sh && ./install.sh
+   ```
+
+
 ## 🚀 Cosa contiene
 
 La raccolta si arricchisce col tempo. Attualmente include strumenti per:
