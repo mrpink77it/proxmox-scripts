@@ -108,10 +108,11 @@ select_container() {
 
     local prompt_msg="${action_context}\n\nLo script eseguirà la sincronizzazione ZFS dei dati e l'adattamento della configurazione.\n\nSeleziona il container LXC:"
 
+    # Dimensioni ampliate a 20x78 con altezza menu 8 per evitare il disallineamento grafico
     CHOICE=$(whiptail --title "Selezione Container LXC" \
         --ok-button "Seleziona" \
         --cancel-button "Indietro" \
-        --menu "$prompt_msg" 18 70 6 "${options[@]}" 2>&1 >/dev/tty)
+        --menu "$prompt_msg" 20 78 8 "${options[@]}" 2>&1 >/dev/tty)
 
     if [[ $? -ne 0 ]]; then
         return 1
