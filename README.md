@@ -14,7 +14,7 @@ Non si tratta di una suite software statica e preconfezionata, ma di una cassett
 Esegui il comando nella tua shell
 
    ```bash
-   wget https://github.com/mrpink77it/proxmox-scripts/install.sh && chmod +x *.sh && ./install.sh
+   git clone https://github.com/mrpink77it/proxmox-scripts.git
    ```
 
 
