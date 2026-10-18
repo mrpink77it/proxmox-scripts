@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# PVE-Zsync Manager - Gestione Sincronizzazione LXC Proxmox VE
+# PVE-Zsync Manager V.1.0.0
 #
 
 set -uo pipefail
