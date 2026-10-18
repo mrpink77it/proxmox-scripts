@@ -7,7 +7,6 @@ set -uo pipefail
 
 CONFIG_FILE="/etc/pve-zsync-tui.conf"
 
-# Caricamento configurazione notifiche se esiste
 if [[ -f "$CONFIG_FILE" ]]; then
     source "$CONFIG_FILE"
 fi
@@ -16,19 +15,16 @@ TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 NOTIFICATION_EMAIL="${NOTIFICATION_EMAIL:-}"
 
-# Verifica permessi di root
 if [[ $EUID -ne 0 ]]; then
     echo "Errore: Questo script deve essere eseguito come root." >&2
     exit 1
 fi
 
-# Controllo OS Proxmox VE
 if ! command -v pveversion &> /dev/null; then
     echo "Errore: Questo sistema non sembra essere un nodo Proxmox VE." >&2
     exit 1
 fi
 
-# Funzione per installazione dipendenze e aggiornamento OS
 init_system() {
     {
         echo 10; sleep 1
@@ -45,12 +41,10 @@ msg_box() {
     whiptail --title "$1" --msgbox "$2" 10 60
 }
 
-# Invio Notifiche
 send_notifications() {
     local subject="$1"
     local message="$2"
 
-    # Telegram
     if [[ -n "${TELEGRAM_BOT_TOKEN}" && -n "${TELEGRAM_CHAT_ID}" ]]; then
         curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d "chat_id=${TELEGRAM_CHAT_ID}" \
@@ -58,16 +52,14 @@ send_notifications() {
             -d "parse_mode=Markdown" >/dev/null 2>&1 || true
     fi
 
-    # Email
     if [[ -n "${NOTIFICATION_EMAIL}" ]] && command -v mail &>/dev/null; then
         echo -e "$message" | mail -s "[Proxmox Migration] $subject" "$NOTIFICATION_EMAIL" || true
     fi
 }
 
-# Funzione per selezionare un container LXC locale
 select_container() {
     local containers
-    containers=$(pct list --noheader | awk '{print $1, ($4 ? $4 : "no-name") " (Status: " $2 ")"}')
+    containers=$(pct list | tail -n +2 | awk '{print $1, ($4 ? $4 : "no-name") " (Status: " $2 ")"}')
     
     if [[ -z "$containers" ]]; then
         msg_box "Errore" "Nessun container LXC trovato su questo nodo."
@@ -84,25 +76,21 @@ select_container() {
     [[ $? -eq 0 ]] && echo "$CHOICE"
 }
 
-# Scansione Nodi (Cluster + LAN)
 discover_nodes() {
     local nodes=()
     
-    # 1. Nodi del Cluster Proxmox
     if command -v pvesh &>/dev/null; then
         while read -r node; do
             [[ -n "$node" ]] && nodes+=("$node" "Cluster Node")
         done < <(pvesh get /nodes --output-format json 2>/dev/null | grep -o '"node": "[^"]*"' | cut -d'"' -f4)
     fi
 
-    # 2. Scansione LAN per porta 8006 (Proxmox Proxy)
     local local_subnet
     local_subnet=$(ip -o -f inet addr show | awk '/scope global/ {print $4}' | head -n 1)
     if [[ -n "$local_subnet" ]]; then
         local scanned
         scanned=$(nmap -p 8006 --open -oG - "$local_subnet" 2>/dev/null | awk '/Host:/ {print $2}')
         for ip in $scanned; do
-            # Evita duplicati se già nel cluster
             local found=0
             for existing in "${nodes[@]}"; do
                 [[ "$existing" == "$ip" ]] && found=1
@@ -120,7 +108,6 @@ discover_nodes() {
     fi
 }
 
-# Configurazione Target Node & SSH
 get_target_connection() {
     local node_list
     node_list=($(discover_nodes))
@@ -158,7 +145,6 @@ get_target_connection() {
     echo "$target_ip|$ssh_port|$ssh_user|$ssh_pass"
 }
 
-# Wizard Chiavi SSH
 ssh_key_wizard() {
     local conn_info
     conn_info=$(get_target_connection)
@@ -183,7 +169,6 @@ ssh_key_wizard() {
     fi
 }
 
-# Pre-flight checks
 preflight_checks() {
     local ip="$1" port="$2" user="$3" pass="$4" pool="$5"
     
@@ -192,7 +177,6 @@ preflight_checks() {
         ssh_cmd="sshpass -p $pass ssh -o StrictHostKeyChecking=no -p $port ${user}@${ip}"
     fi
 
-    # Verifica spazio ZFS target
     local free_space
     free_space=$($ssh_cmd "zfs get -H -o value available $pool" 2>/dev/null)
     if [[ -z "$free_space" ]]; then
@@ -203,7 +187,6 @@ preflight_checks() {
     return 0
 }
 
-# Sincronizzazione / Clonazione LXC
 sync_container_menu() {
     local vmid
     vmid=$(select_container)
@@ -219,7 +202,6 @@ sync_container_menu() {
     target_pool=$(whiptail --title "Pool ZFS Target" --inputbox "Inserisci il pool/dataset ZFS di destinazione:" 10 50 "rpool/data" 2>&1 >/dev/tty)
     [[ $? -ne 0 || -z "$target_pool" ]] && return
 
-    # Pre-flight check
     if ! preflight_checks "$target_node" "$target_port" "$ssh_user" "$ssh_pass" "$target_pool"; then
         return
     fi
@@ -236,14 +218,12 @@ sync_container_menu() {
         [[ $? -ne 0 ]] && return
     fi
 
-    # Opzioni post-migrazione
     local post_action
     post_action=$(whiptail --title "Azioni Post-Migrazione" --menu "Cosa fare dopo la sincronizzazione?" 14 60 3 \
         "none" "Nessuna azione automatica" \
         "switch" "Spegni sorgente e avvia target (Switchover)" \
         "shutdown_src" "Spegni solo il container sorgente" 2>&1 >/dev/tty)
 
-    # Esecuzione Sync con feedback
     {
         if [[ "$job_type" == "sync" ]]; then
             pve-zsync sync --source "$vmid" --dest "${target_node}:${target_pool}" --name "$job_name" --maxsnap 2 --verbose
@@ -251,7 +231,6 @@ sync_container_menu() {
             pve-zsync create --source "$vmid" --dest "${target_node}:${target_pool}" --name "$job_name" --schedule hourly --maxsnap 2 --verbose
         fi
 
-        # Copia Configurazione via SCP
         local scp_cmd="scp -P $target_port -o StrictHostKeyChecking=no"
         if [[ -n "$ssh_pass" ]]; then
             sshpass -p "$ssh_pass" $scp_cmd "/etc/pve/lxc/${vmid}.conf" "${ssh_user}@${target_node}:/etc/pve/lxc/${vmid}.conf"
@@ -259,7 +238,6 @@ sync_container_menu() {
             $scp_cmd "/etc/pve/lxc/${vmid}.conf" "${ssh_user}@${target_node}:/etc/pve/lxc/${vmid}.conf"
         fi
 
-        # Gestione Post-Azione
         local ssh_exec="ssh -p $target_port -o StrictHostKeyChecking=no ${ssh_user}@${target_node}"
         [[ -n "$ssh_pass" ]] && ssh_exec="sshpass -p $ssh_pass ssh -p $target_port -o StrictHostKeyChecking=no ${ssh_user}@${target_node}"
 
@@ -277,7 +255,6 @@ sync_container_menu() {
     msg_box "Completato" "Procedura completata con successo!"
 }
 
-# Gestione ed eliminazione Job pve-zsync
 manage_jobs_menu() {
     local jobs_raw
     jobs_raw=$(pve-zsync list 2>/dev/null | tail -n +2)
@@ -305,7 +282,6 @@ manage_jobs_menu() {
     fi
 }
 
-# Configurazione Notifiche
 configure_notifications_menu() {
     local token
     token=$(whiptail --title "Telegram Bot" --inputbox "Inserisci Telegram Bot Token (lascia vuoto per disabilitare):" 10 50 "$TELEGRAM_BOT_TOKEN" 2>&1 >/dev/tty)
@@ -328,7 +304,6 @@ EOF
     msg_box "Salvataggio" "Configurazione notifiche salvata con successo."
 }
 
-# Confronto Configurazioni
 compare_config_menu() {
     local vmid
     vmid=$(select_container)
@@ -373,7 +348,6 @@ compare_config_menu() {
     fi
 }
 
-# Loop Principale TUI
 while true; do
     CHOICE=$(whiptail --title "PVE-Zsync LXC Manager" --menu "Gestione Avanzata Migrazioni e DR Proxmox" 18 68 6 \
         "1" "Sincronizza / Clona Container LXC (con pre-flight e post-azioni)" \
