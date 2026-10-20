@@ -1,4 +1,4 @@
-# PVE-Zsync Manager
+# PVE-Zsync Manager -- WIP -- WAIT RELEASE
 
 **PVE-Zsync Manager** è una TUI (Text User Interface) avanzata scritta in Bash Shell con interfaccia `whiptail`, progettata specificamente per ambienti **Proxmox VE (PVE)**. Semplifica, automatizza e protegge la gestione, la clonazione, la replica e la migrazione dei container LXC basati su ZFS tra nodi Proxmox VE distinti (sia appartenenti allo stesso cluster che isolati).
 
